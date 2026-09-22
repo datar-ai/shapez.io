@@ -1,0 +1,2 @@
+{"ts":"2026-09-22T02:44:48.186Z","session_id":"62bb06c6-f1fa-5ba6-a467-0c60a1f6ea32","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-22T02:44:59.235Z","session_id":"62bb06c6-f1fa-5ba6-a467-0c60a1f6ea32","tool":"Bash","targets":["ledger/.trace-2026-09-62bb06c6.jsonl","ledger/.trace-2026-09-62bb06c6.jsonl","ledger/"],"decision":"allow","reason":"bash read-only mention"}
