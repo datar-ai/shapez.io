@@ -243,6 +243,11 @@ pub struct SideState {
     pub command_points: i32,
     /// When true, the built-in commander spends this side's points each pulse.
     pub ai: bool,
+    /// When true, this side reads the terrain: its groups close in on enemies
+    /// hiding in a nebula, and its commander sends hammers round the flank
+    /// that is hidden by a nebula rather than slowed by asteroids. Off only
+    /// for measuring what reading the terrain is worth.
+    pub terrain_sense: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +339,7 @@ impl Battle {
             sides: [SideState {
                 command_points: 0,
                 ai: true,
+                terrain_sense: true,
             }; 2],
             events: Vec::new(),
             outcome: None,
@@ -725,6 +731,21 @@ impl Battle {
         Some(if d_new * 3 < d_cur * 2 { nearest } else { cur })
     }
 
+    /// Terrain under a group standing at (x, y): how many of five points
+    /// spread over its formation lie in an asteroid field and in a nebula.
+    pub fn cover_at(&self, x: i32, y: i32) -> (i64, i64) {
+        const SPREAD: i32 = 300 * FP;
+        let (mut rocks, mut fog) = (0, 0);
+        for (dx, dy) in [(0, 0), (SPREAD, 0), (-SPREAD, 0), (0, SPREAD), (0, -SPREAD)] {
+            match self.terrain.at(x + dx, y + dy) {
+                terrain::ASTEROIDS => rocks += 1,
+                terrain::NEBULA => fog += 1,
+                _ => {}
+            }
+        }
+        (rocks, fog)
+    }
+
     fn plan_groups(&mut self) {
         // Refresh centroids and derived stats first so every group plans on the same picture.
         for gi in 0..self.groups.len() {
@@ -796,10 +817,15 @@ impl Battle {
                         _ => None,
                     };
                     target_group = explicit.or_else(|| self.engage_target(&g));
-                    let dr = g.range as i64 * g.doctrine.range_permille() / 1000;
+                    let sense = self.sides[g.side as usize].terrain_sense;
+                    let mut dr = g.range as i64 * g.doctrine.range_permille() / 1000;
                     if let Some(tid) = target_group {
                         let t = &self.groups[tid as usize];
                         let to_us = atan2((g.cy - t.cy) as i64, (g.cx - t.cx) as i64);
+                        // An enemy hiding in a nebula can only be seen from close by.
+                        if sense && self.cover_at(t.cx, t.cy).1 >= 3 {
+                            dr = dr.min(terrain::NEBULA_SIGHT as i64 * 9 / 10);
+                        }
                         match order {
                             Order::Engage | Order::Attack { .. } => {
                                 let (ox, oy) = polar(dr, to_us);

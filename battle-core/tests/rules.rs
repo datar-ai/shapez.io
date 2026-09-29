@@ -229,6 +229,7 @@ fn nebula_hides_ships_beyond_close_range() {
         b.sides = [battlecore::battle::SideState {
             command_points: 0,
             ai: false,
+            terrain_sense: true,
         }; 2];
         b.step();
         b.issue(0, Command::Hold { group: 0 }).unwrap();
@@ -296,4 +297,23 @@ fn carriers_send_one_wave_at_a_time_until_they_scramble() {
         }
     }
     assert!(launches >= 4, "launches {launches}");
+}
+
+#[test]
+fn groups_close_in_on_enemies_hiding_in_a_nebula() {
+    let goal_distance = |sense: bool| {
+        let mut b = deployed();
+        b.sides[0].terrain_sense = sense;
+        let (gun, target) = (0u16, 5u16); // blue and red gun lines
+        let t = &b.groups[target as usize];
+        let (tx, ty) = (t.cx / 100, t.cy / 100);
+        b.terrain.paint_ellipse(NEBULA, tx, ty, 1200, 1200);
+        b.issue(0, Command::Attack { group: gun, target }).unwrap();
+        b.step();
+        let (g, t) = (&b.groups[gun as usize], &b.groups[target as usize]);
+        ((g.goal_x - t.cx) as f64).hypot((g.goal_y - t.cy) as f64) / 100.0
+    };
+    let (blind, reading) = (goal_distance(false), goal_distance(true));
+    assert!(blind > 1500.0, "without terrain sense: {blind}");
+    assert!(reading <= 1000.0, "with terrain sense: {reading}");
 }

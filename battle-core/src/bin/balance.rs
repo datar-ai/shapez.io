@@ -1,6 +1,8 @@
 //! Auto-resolve many seeds of the demo battle and report the balance.
 //!
-//!   balance [--seeds 100] [--scale 1]
+//!   balance [--seeds 100] [--scale 1] [--no-terrain blue|red]
+//!
+//! `--no-terrain` makes one side ignore the terrain, to measure what reading it is worth.
 
 use battlecore::scenario;
 use battlecore::types::*;
@@ -30,6 +32,11 @@ fn main() {
         let mut b = scenario::demo(seed, scale);
         b.sides[0].ai = true;
         b.sides[1].ai = true;
+        match arg(&args, "--no-terrain").as_deref() {
+            Some("blue") => b.sides[0].terrain_sense = false,
+            Some("red") => b.sides[1].terrain_sense = false,
+            _ => {}
+        }
         while b.outcome.is_none() {
             b.step();
             for e in &b.events {

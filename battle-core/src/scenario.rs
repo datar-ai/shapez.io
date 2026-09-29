@@ -34,7 +34,7 @@ pub fn demo(seed: u64, scale: u32) -> Battle {
 /// Red's formation: (x, y) for guns, carriers, anvil, hammer, reserve, in
 /// scale-1 world units (y is multiplied by the spread).
 pub const RED_LAYOUT: [(i32, i32); 5] =
-    [(3000, 0), (4400, 0), (2000, 0), (2550, 2000), (3600, -1800)];
+    [(3000, 0), (4400, 0), (2000, 0), (2480, 2000), (3600, -1800)];
 
 pub fn demo_with(seed: u64, scale: u32, red_at: &[(i32, i32); 5]) -> Battle {
     let k = scale.max(1);

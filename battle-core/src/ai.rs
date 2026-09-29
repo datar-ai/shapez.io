@@ -83,6 +83,24 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
     best
 }
 
+/// Extra distance an approach from `a` to `b` is worth: each stretch through
+/// an asteroid field counts double, each stretch through a nebula counts half.
+fn approach_cost(b: &Battle, a: (i32, i32), to: (i32, i32)) -> i64 {
+    const STEP: i64 = 250 * FP as i64;
+    let (dx, dy) = ((to.0 - a.0) as i64, (to.1 - a.1) as i64);
+    let n = (len(dx, dy) / STEP).max(1);
+    let mut extra = 0;
+    for k in 1..=n {
+        let p = (a.0 + (dx * k / n) as i32, a.1 + (dy * k / n) as i32);
+        extra += match b.terrain.at(p.0, p.1) {
+            crate::terrain::ASTEROIDS => STEP,
+            crate::terrain::NEBULA => -STEP / 2,
+            _ => 0,
+        };
+    }
+    extra
+}
+
 pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
     let mut options: Vec<(i32, Command)> = Vec::new();
     let mine: Vec<&Group> = b.groups.iter().filter(|g| g.side == side).collect();
@@ -117,14 +135,16 @@ pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
                     // Pick the flank that is closer to us.
                     let l = polar(1000 * FP as i64, prize.facing.wrapping_add(ANG_QUARTER));
                     let r = polar(1000 * FP as i64, prize.facing.wrapping_sub(ANG_QUARTER));
-                    let dl = len(
-                        prize.cx as i64 + l.0 - g.cx as i64,
-                        prize.cy as i64 + l.1 - g.cy as i64,
-                    );
-                    let dr = len(
-                        prize.cx as i64 + r.0 - g.cx as i64,
-                        prize.cy as i64 + r.1 - g.cy as i64,
-                    );
+                    let lp = (prize.cx + l.0 as i32, prize.cy + l.1 as i32);
+                    let rp = (prize.cx + r.0 as i32, prize.cy + r.1 as i32);
+                    let mut dl = len((lp.0 - g.cx) as i64, (lp.1 - g.cy) as i64);
+                    let mut dr = len((rp.0 - g.cx) as i64, (rp.1 - g.cy) as i64);
+                    // Reading the terrain: an approach through a nebula stays hidden,
+                    // one through an asteroid field is slow.
+                    if b.sides[side as usize].terrain_sense {
+                        dl += approach_cost(b, (g.cx, g.cy), lp);
+                        dr += approach_cost(b, (g.cx, g.cy), rp);
+                    }
                     options.push((
                         60,
                         Command::Flank {
