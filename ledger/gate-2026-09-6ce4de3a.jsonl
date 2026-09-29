@@ -1,0 +1,1 @@
+{"ts":"2026-09-29T04:05:00.308Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":["ledger/.trace-2026-09-6ce4de3a.jsonl"],"decision":"deny","reason":"rules.md 機器規則禁止寫入 ledger/（目標：ledger/.trace-2026-09-6ce4de3a.jsonl）。"}
