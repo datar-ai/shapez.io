@@ -1,0 +1,6 @@
+{"ts":"2026-09-29T03:09:19.624Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-29T03:09:22.967Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-29T03:09:28.291Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-29T03:09:38.505Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-29T03:09:43.385Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-29T03:13:46.192Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Write","targets":["/tmp/claude/memory/team/silo/prototype-roadmap-2026-09-29.md"],"decision":"allow","reason":null}
