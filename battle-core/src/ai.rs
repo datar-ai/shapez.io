@@ -30,7 +30,7 @@ fn dist(a: &Group, b: &Group) -> i64 {
 
 /// How much a group wants to use its signature move now, if it can.
 fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
-    if g.charging() || b.tick < g.sig_ready_at {
+    if g.sig_armed || g.charging() || b.tick < g.sig_ready_at {
         return None;
     }
     let d = dist(g, nearest);
@@ -49,10 +49,11 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
     }
     let mut best = None;
     let mut consider = |score: i32| best = Some(best.map_or(score, |b: i32| b.max(score)));
-    if salvo > 0 && d <= 2700 * FP as i64 {
+    // Bought moves wait until the enemy is in reach, so buy them a pulse ahead.
+    if salvo > 0 && d <= 6000 * FP as i64 {
         consider(55);
     }
-    if torpedo >= 3 && d <= 3400 * FP as i64 {
+    if torpedo >= 3 && d <= 6000 * FP as i64 {
         consider(50);
     }
     if burner * 2 > salvo + torpedo + carriers + burner
@@ -70,8 +71,9 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
                 max += WING_SIZE as i32;
             }
         }
-        if max > 0 && have * 2 < max && b.pulse() >= 1 {
-            consider(45);
+        // Worth it whenever a wing is short, or from the second pulse on.
+        if max > 0 && (have * 2 < max || b.pulse() >= 1) {
+            consider(if have * 2 < max { 45 } else { 35 });
         }
     }
     best
@@ -152,7 +154,7 @@ pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
                 }
             }
             GroupStatus::Reserve => {
-                if front_shaken || b.pulse() >= 3 {
+                if front_shaken || b.pulse() >= 1 {
                     options.push((70, Command::CommitReserve { group: g.id }));
                 }
             }
@@ -164,11 +166,16 @@ pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
     let mut picked = Vec::new();
     let mut used = Vec::new();
     for (_, cmd) in options {
-        if used.contains(&cmd.group()) || cmd.cost() > points {
+        // One order per group, plus its signature move, which does not
+        // conflict with where the group goes.
+        let is_sig = matches!(cmd, Command::Signature { .. });
+        if (!is_sig && used.contains(&cmd.group())) || cmd.cost() > points {
             continue;
         }
         points -= cmd.cost();
-        used.push(cmd.group());
+        if !is_sig {
+            used.push(cmd.group());
+        }
         picked.push(cmd);
     }
     picked

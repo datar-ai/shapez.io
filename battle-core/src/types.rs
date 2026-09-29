@@ -4,14 +4,16 @@ use crate::fixed::FP;
 
 /// Simulation steps per second.
 pub const TICK_HZ: u32 = 20;
-/// One pulse = 15 s; the battle pauses at every pulse boundary.
-pub const PULSE_TICKS: u32 = 15 * TICK_HZ;
+/// One pulse = 60 s; the battle pauses at every pulse boundary.
+pub const PULSE_TICKS: u32 = 60 * TICK_HZ;
+/// A retreating group charges its jump drives this long, unable to fire.
+pub const RETREAT_TICKS: u32 = 15 * TICK_HZ;
 /// Command points each side receives at the start of every pulse.
 pub const COMMAND_POINTS: i32 = 3;
 /// Battle groups re-plan twice a second.
 pub const GROUP_THINK_TICKS: u32 = 10;
 /// A battle that is still undecided after this many pulses is a draw.
-pub const MAX_PULSES: u32 = 40;
+pub const MAX_PULSES: u32 = 10;
 /// Cohesion is kept on a 0..=1000 scale.
 pub const COHESION_MAX: i32 = 1000;
 /// Half-width of the battlefield; routed groups leave past this line.
@@ -129,8 +131,9 @@ pub struct ClassStats {
     pub signature: Signature,
 }
 
-/// Signature moves: one per class, bought with a command point, announced
-/// to both sides while charging, then a long cooldown.
+/// Signature moves: one per class, bought with a command point. A bought move
+/// waits until the enemy is in reach, is announced to both sides while it
+/// charges, then cools down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Signature {
@@ -148,7 +151,7 @@ pub enum Signature {
 /// Ticks between buying a signature move and its effect.
 pub const SIG_CHARGE_TICKS: u32 = 3 * TICK_HZ;
 /// Ticks before a group can use its signature move again.
-pub const SIG_COOLDOWN_TICKS: u32 = 2 * PULSE_TICKS;
+pub const SIG_COOLDOWN_TICKS: u32 = 30 * TICK_HZ;
 /// Afterburn duration.
 pub const AFTERBURN_TICKS: u32 = 10 * TICK_HZ;
 
@@ -163,7 +166,7 @@ pub const WING_STRIKE_RANGE: i32 = 250 * FP;
 /// Wings dogfight other wings from this close.
 pub const WING_DOGFIGHT_RANGE: i32 = 300 * FP;
 /// Damage per fighter per strafing pass, and ticks between passes.
-pub const FIGHTER_DAMAGE: i32 = 26;
+pub const FIGHTER_DAMAGE: i32 = 34;
 pub const WING_PASS_TICKS: u16 = 20;
 /// Chance (permille) per fighter per dogfight round to down an enemy fighter.
 pub const DOGFIGHT_CHANCE: i32 = 90;

@@ -136,7 +136,8 @@ pub fn write_frame(o: &mut String, b: &Battle) {
         if gi > 0 {
             o.push(',');
         }
-        // Signature: negative while charging (ticks left), else ticks until ready.
+        // Signature: negative while charging (ticks left), else ticks until ready;
+        // the last field is 1 while it is bought and waiting for the enemy to come in reach.
         let sig = if g.charging() {
             -((g.sig_fire_at - b.tick) as i64)
         } else {
@@ -144,7 +145,7 @@ pub fn write_frame(o: &mut String, b: &Battle) {
         };
         let _ = write!(
             o,
-            "[{},{},{},{},{},{},{},{},{}]",
+            "[{},{},{},{},{},{},{},{},{},{}]",
             g.cx / FP,
             g.cy / FP,
             g.goal_x / FP,
@@ -153,7 +154,8 @@ pub fn write_frame(o: &mut String, b: &Battle) {
             g.status.code(),
             g.target_group.map_or(-1, |t| t as i32),
             g.alive,
-            sig
+            sig,
+            g.sig_armed as u8
         );
     }
     o.push_str("]}");

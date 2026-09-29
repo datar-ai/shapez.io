@@ -143,7 +143,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   </aside>
   <div class="transport">
     <span id="live-transport" hidden>
-      <button id="go" class="primary" type="button">開打 15 秒</button>
+      <button id="go" class="primary" type="button">開打</button>
     </span>
     <span id="replay-transport">
       <button id="play" type="button">播放</button>
@@ -290,20 +290,21 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       el.appendChild(d);
     });
   }
-  function sigText(sig) {
+  function sigText(sig, armed) {
+    if (armed) return "已下令，敵人進入射程就充能";
     if (sig < 0) return `充能中 ${(-sig / H.tickHz).toFixed(1)} 秒`;
     if (sig > 0) return `冷卻 ${Math.ceil(sig / H.tickHz)} 秒`;
     return "就緒";
   }
   function updateGroups(frame) {
     frame.g.forEach((g, i) => {
-      const [, , , , coh, st, , alive, sig] = g;
+      const [, , , , coh, st, , alive, sig, armed] = g;
       $("gs" + i).textContent = `${STATUS[st]} · ${alive} 艘 · ${coh}`;
       const b = $("gb" + i);
       b.style.width = (coh / 10) + "%";
       b.style.background = coh > 600 ? COL.good : coh > 250 ? COL.warn : COL.bad;
       const gg = $("gg" + i);
-      gg.textContent = st >= 3 ? "" : `${gg.dataset.name}：${sigText(sig ?? 0)}`;
+      gg.textContent = st >= 3 ? "" : `${gg.dataset.name}：${sigText(sig ?? 0, armed)}`;
       $("gd" + i).textContent = DOCTRINE[H.groups[i].doctrineNow ?? H.groups[i].doctrine];
       const el = $("grp" + i);
       el.classList.toggle("sel", i === sel);
@@ -319,7 +320,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     else if (k === EV.COMMAND && c !== 8 && c !== 9) text = `${G(a)} ${VERB[c]}`;
     else if (k === EV.ROUTED) text = `${G(a)} 潰散`;
     else if (k === EV.ESCAPED) text = `${G(a)} 撤離成功（${c} 艘）`;
-    else if (k === EV.RETREAT) text = `${G(a)} 開始撤離，一個脈衝內不能開火`;
+    else if (k === EV.RETREAT) text = `${G(a)} 開始撤離，15 秒內不能開火`;
     else if (k === EV.SIG_CHARGE) text = `${G(a)} 招牌技充能（${(c / H.tickHz).toFixed(0)} 秒後發動）`;
     else if (k === EV.SIG_FIRE) text = `${G(a)} 發動 ${[...H.sigs[a]].map(s => SIG_NAME[s]).join("＋")}`;
     else if (k === EV.FLAGSHIP) text = `<span style="color:${COL.side[b]}">${b ? "紅" : "藍"}方旗艦</span> 被擊沉`;
@@ -702,7 +703,9 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       return;
     }
     const blueAI = $("aiBlue").checked;
-    banner(blueAI ? "脈衝暫停：按「開打 15 秒」繼續" : `脈衝 ${Math.floor(cur.t / H.pulseTicks)}：你有 ${cur.cp[0]} 點指令點。選一個藍方戰鬥群下令，然後按「開打 15 秒」。`);
+    const goLabel = `開打 ${H.pulseTicks / H.tickHz} 秒`;
+    $("go").textContent = goLabel;
+    banner(blueAI ? `脈衝暫停：按「${goLabel}」繼續` : `脈衝 ${Math.floor(cur.t / H.pulseTicks)}：你有 ${cur.cp[0]} 點指令點。選一個藍方戰鬥群下令，然後按「${goLabel}」。`);
     $("go").disabled = false;
     renderOrders();
   }
@@ -746,7 +749,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     $("cp").innerHTML = Array.from({ length: H.commandPoints || 3 }, (_, i) => `<i class="${i < cp ? "on" : ""}"></i>`).join("");
     if ($("aiBlue").checked) { el.innerHTML = `<h2>命令</h2><div class="hint">藍方由 AI 指揮。取消勾選「藍方也交給 AI」再重新開戰，就能自己下令。</div>`; return; }
     if (sel < 0 || H.groups[sel].side !== 0) { el.innerHTML = `<h2>命令</h2><div class="hint">點選右側或地圖上的藍方戰鬥群。</div>`; return; }
-    const g = cur.g[sel], st = g[5], sig = g[8];
+    const g = cur.g[sel], st = g[5], sig = g[8], sigArmed = g[9];
     const gone = st >= 2;
     const planningNow = !running && !over;
     const can = (cost) => planningNow && !gone && cp >= cost;
@@ -763,12 +766,12 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         ${btn("flankL", "左側擊", 1, can(1), armed(1))}
         ${btn("flankR", "右側擊", 1, can(1), armed(2))}
         ${btn("advance", "推進到…", 1, can(1), armed(4))}
-        ${btn("sig", sigName, 1, can(1) && sig === 0)}
+        ${btn("sig", sigArmed ? sigName + "（待發）" : sigName, 1, can(1) && sig === 0 && !sigArmed)}
         <div class="lbl">集火部位（1 點）</div>
         <div class="row4">${[1, 2, 4, 8].map(p => btn("part" + p, PART[p], "", can(1))).join("")}</div>
         <div class="lbl">準則（1 點）：${DOCTRINE[H.groups[sel].doctrineNow]}</div>
         <div class="row3">${[0, 1, 2].map(d => btn("doc" + d, DOCTRINE[d], "", can(1) && d !== H.groups[sel].doctrineNow)).join("")}</div>
-        <div class="lbl">撤離：免費，但一整個脈衝不能開火</div>
+        <div class="lbl">撤離：免費，但 15 秒內不能開火，之後跳離戰場</div>
         ${btn("retreat", pending && pending.verb === 8 ? "確定撤離？" : "跳躍撤離", 0, can(0), pending && pending.verb === 8 ? "armed" : "")}
       </div>`;
     }

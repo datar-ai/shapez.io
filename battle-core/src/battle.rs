@@ -149,8 +149,13 @@ pub struct Group {
     pub damage_taken: i64,
     /// Signature move: usable from this tick on.
     pub sig_ready_at: u32,
-    /// Signature move bought and charging; fires at this tick. `NONE` when idle.
+    /// Signature move bought and waiting for the right moment (the enemy in
+    /// reach); then it starts charging.
+    pub sig_armed: bool,
+    /// Signature move charging; fires at this tick. `NONE` when idle.
     pub sig_fire_at: u32,
+    /// Which signature moves the group's ships have (bit per `Signature`).
+    pub sig_mask: u8,
     /// Afterburn runs until this tick.
     pub boost_until: u32,
     /// Value of living ships and how many of them carry heavy point defense
@@ -366,6 +371,7 @@ impl Battle {
         let (mut cost, mut hull) = (0, 0i64);
         let (mut speed, mut range, mut turn) = (i32::MAX, i32::MAX, u16::MAX);
         let mut has_carrier = false;
+        let mut sig_mask = 0u8;
         let mut k: i64 = 0;
         for &(class, count) in ships {
             let st = class.stats();
@@ -420,6 +426,7 @@ impl Battle {
                 speed = speed.min(st.max_speed);
                 range = range.min(st.primary.range);
                 has_carrier |= st.hangar > 0;
+                sig_mask |= 1 << st.signature as u8;
                 turn = turn.min(st.turn_rate);
                 k += 1;
             }
@@ -461,7 +468,9 @@ impl Battle {
             damage_dealt: 0,
             damage_taken: 0,
             sig_ready_at: 0,
+            sig_armed: false,
             sig_fire_at: NONE,
+            sig_mask,
             boost_until: 0,
             alive_value: cost,
             screen: 0,
@@ -493,7 +502,7 @@ impl Battle {
         match cmd {
             Command::CommitReserve { .. } if !is_reserve => return Err(CommandError::NotInReserve),
             Command::Signature { .. }
-                if is_reserve || g.charging() || self.tick < g.sig_ready_at =>
+                if is_reserve || g.sig_armed || g.charging() || self.tick < g.sig_ready_at =>
             {
                 return Err(CommandError::SignatureNotReady)
             }
@@ -549,7 +558,7 @@ impl Battle {
             }
             Command::Retreat { .. } => {
                 g.status = GroupStatus::Retreating {
-                    until: tick + PULSE_TICKS,
+                    until: tick + RETREAT_TICKS,
                 };
                 g.goal_x = g.cx;
                 g.goal_y = g.cy;
@@ -558,14 +567,7 @@ impl Battle {
                 8
             }
             Command::Signature { .. } => {
-                g.sig_fire_at = tick + SIG_CHARGE_TICKS;
-                self.events.push(Event::new(
-                    tick,
-                    ev::SIGNATURE_CHARGING,
-                    gi as u32,
-                    0,
-                    SIG_CHARGE_TICKS as i32,
-                ));
+                g.sig_armed = true;
                 9
             }
         };
@@ -1185,6 +1187,35 @@ impl Battle {
     /// Signature moves whose charge runs out this step take effect now.
     fn fire_signatures(&mut self, launches: &mut Vec<(u32, u32, u8)>) {
         let tick = self.tick;
+        // Armed moves start charging once the enemy is in reach.
+        for gi in 0..self.groups.len() {
+            let g = &self.groups[gi];
+            if !g.sig_armed || g.status != GroupStatus::Active {
+                continue;
+            }
+            let d = g.target_group.map_or(i64::MAX, |t| {
+                let t = &self.groups[t as usize];
+                len((t.cx - g.cx) as i64, (t.cy - g.cy) as i64)
+            });
+            let has = |s: Signature| g.sig_mask & (1 << s as u8) != 0;
+            let reach = |u: i64| d <= u * FP as i64;
+            let go = (has(Signature::Salvo) && reach(2600))
+                || (has(Signature::Torpedoes) && reach(3400))
+                || (has(Signature::Afterburn) && reach(4500))
+                || (has(Signature::Scramble) && reach(7000));
+            if go {
+                let g = &mut self.groups[gi];
+                g.sig_armed = false;
+                g.sig_fire_at = tick + SIG_CHARGE_TICKS;
+                self.events.push(Event::new(
+                    tick,
+                    ev::SIGNATURE_CHARGING,
+                    gi as u32,
+                    0,
+                    SIG_CHARGE_TICKS as i32,
+                ));
+            }
+        }
         for gi in 0..self.groups.len() {
             if self.groups[gi].sig_fire_at != tick {
                 continue;
@@ -1917,6 +1948,7 @@ impl Battle {
         }
         for g in &self.groups {
             eat(g.sig_fire_at as i64);
+            eat(g.sig_armed as i64);
             eat(g.sig_ready_at as i64);
         }
         eat(self.tick as i64);

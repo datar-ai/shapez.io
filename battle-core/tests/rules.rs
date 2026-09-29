@@ -85,7 +85,7 @@ fn retreat_is_free_locks_the_group_then_escapes() {
         Err(CommandError::GroupRetreating)
     );
     let ships: Vec<u32> = b.groups[g as usize].ships.clone();
-    for _ in 0..PULSE_TICKS {
+    for _ in 0..RETREAT_TICKS {
         b.step();
         for e in &b.events {
             if e.kind == ev::FIRE || e.kind == ev::MISSILE_LAUNCH {
@@ -108,34 +108,43 @@ fn demo_battles_end_in_a_few_pulses() {
     for seed in 1..=4 {
         let mut b = scenario::demo(seed, 1);
         let out = b.run_auto();
-        let pulses = out.tick.div_ceil(PULSE_TICKS);
-        assert!((4..=12).contains(&pulses), "seed {seed}: {pulses} pulses");
+        let seconds = out.tick / TICK_HZ;
+        assert!((60..=300).contains(&seconds), "seed {seed}: {seconds} s");
     }
 }
 
 #[test]
-fn signature_charges_fires_then_cools_down() {
+fn signature_waits_for_contact_charges_fires_then_cools_down() {
     let mut b = deployed();
-    let g = group_of(&b, 0, false);
+    let g = group_of(&b, 0, false); // the gun line, still far from the enemy
     b.issue(0, Command::Signature { group: g }).unwrap();
     assert_eq!(b.sides[0].command_points, COMMAND_POINTS - 1);
     assert_eq!(
         b.issue(0, Command::Signature { group: g }),
         Err(CommandError::SignatureNotReady)
     );
-    let bought = b.tick;
-    let mut fired = None;
-    for _ in 0..SIG_CHARGE_TICKS + 2 {
+    let (mut charged, mut fired) = (None, None);
+    for _ in 0..PULSE_TICKS {
         b.step();
-        if b.events
-            .iter()
-            .any(|e| e.kind == ev::SIGNATURE_FIRED && e.a == g as u32)
-        {
-            fired = Some(b.tick - 1);
+        for e in b.events.iter().filter(|e| e.a == g as u32) {
+            if e.kind == ev::SIGNATURE_CHARGING {
+                charged = Some(e.tick);
+            }
+            if e.kind == ev::SIGNATURE_FIRED {
+                fired = Some(e.tick);
+            }
+        }
+        if fired.is_some() || b.outcome.is_some() {
+            break;
         }
     }
-    assert_eq!(fired, Some(bought + SIG_CHARGE_TICKS));
-    b.run_to_pulse();
+    let charged = charged.expect("never came in reach");
+    assert!(
+        charged > 20 * TICK_HZ,
+        "should wait for the enemy, charged at {charged}"
+    );
+    assert_eq!(fired, Some(charged + SIG_CHARGE_TICKS));
+    b.step();
     assert_eq!(
         b.issue(0, Command::Signature { group: g }),
         Err(CommandError::SignatureNotReady)
@@ -151,8 +160,9 @@ fn cruiser_signature_launches_torpedoes() {
         .find(|g| g.side == 0 && g.name.contains("鐵砧"))
         .unwrap()
         .id;
-    b.run_to_pulse(); // close the distance first
-    b.run_to_pulse();
+    for _ in 0..30 * TICK_HZ {
+        b.step(); // close the distance first
+    }
     b.issue(0, Command::Signature { group: cruisers }).unwrap();
     let mut torpedoes = 0;
     for _ in 0..SIG_CHARGE_TICKS + 2 {
