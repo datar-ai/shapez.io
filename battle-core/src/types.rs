@@ -24,6 +24,7 @@ pub enum ShipClass {
     Cruiser = 1,
     Destroyer = 2,
     Flagship = 3,
+    Carrier = 4,
 }
 
 impl ShipClass {
@@ -32,7 +33,8 @@ impl ShipClass {
             0 => ShipClass::Battleship,
             1 => ShipClass::Cruiser,
             2 => ShipClass::Destroyer,
-            _ => ShipClass::Flagship,
+            3 => ShipClass::Flagship,
+            _ => ShipClass::Carrier,
         }
     }
     pub fn stats(self) -> &'static ClassStats {
@@ -44,6 +46,7 @@ impl ShipClass {
             ShipClass::Cruiser => "cruiser",
             ShipClass::Destroyer => "destroyer",
             ShipClass::Flagship => "flagship",
+            ShipClass::Carrier => "carrier",
         }
     }
 }
@@ -120,7 +123,68 @@ pub struct ClassStats {
     pub primary: Weapon,
     pub missiles: Option<MissileRack>,
     pub pd: PointDefense,
+    /// Fighter wings carried (carriers only).
+    pub hangar: u8,
+    /// What this class does when its group uses its signature move.
+    pub signature: Signature,
 }
+
+/// Signature moves: one per class, bought with a command point, announced
+/// to both sides while charging, then a long cooldown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Signature {
+    /// Battleships and flagships: the next main-gun shot hits three times as
+    /// hard and reaches further, but the guns stay silent while charging.
+    Salvo = 0,
+    /// Cruisers: two heavy torpedoes each. Slow, need several point-defense hits.
+    Torpedoes = 1,
+    /// Destroyers: double speed for ten seconds.
+    Afterburn = 2,
+    /// Carriers: every wing rearmed and launched at once.
+    Scramble = 3,
+}
+
+/// Ticks between buying a signature move and its effect.
+pub const SIG_CHARGE_TICKS: u32 = 3 * TICK_HZ;
+/// Ticks before a group can use its signature move again.
+pub const SIG_COOLDOWN_TICKS: u32 = 2 * PULSE_TICKS;
+/// Afterburn duration.
+pub const AFTERBURN_TICKS: u32 = 10 * TICK_HZ;
+
+/// Fighter wings (the fighter height layer). Only point defense and other
+/// fighters can hit them.
+pub const WING_SIZE: u8 = 10;
+pub const WING_SPEED: i32 = ups(400);
+/// Point defense is less accurate against nimble fighters (percent of its missile chance).
+pub const PD_VS_FIGHTER: i32 = 35;
+/// Fighters strafe a ship from this close.
+pub const WING_STRIKE_RANGE: i32 = 250 * FP;
+/// Wings dogfight other wings from this close.
+pub const WING_DOGFIGHT_RANGE: i32 = 300 * FP;
+/// Damage per fighter per strafing pass, and ticks between passes.
+pub const FIGHTER_DAMAGE: i32 = 26;
+pub const WING_PASS_TICKS: u16 = 20;
+/// Chance (permille) per fighter per dogfight round to down an enemy fighter.
+pub const DOGFIGHT_CHANCE: i32 = 90;
+pub const DOGFIGHT_TICKS: u16 = 10;
+/// A docked wing gains one fighter every this many ticks.
+pub const REARM_TICKS: u16 = 40;
+/// A wing heads home when it is down to this many fighters.
+pub const WING_RETURN_AT: u8 = 3;
+
+/// Heavy torpedo from the cruiser signature move.
+pub const TORPEDO: MissileRack = MissileRack {
+    range: 3600 * FP,
+    cooldown: 0,
+    damage: 2200,
+    speed: ups(75),
+};
+/// Distance a group with carriers keeps from its target.
+pub const CARRIER_STANDOFF: i32 = 3800 * FP;
+
+/// Point-defense hits needed to stop a torpedo.
+pub const TORPEDO_HP: u8 = 3;
 
 const fn deg(d: u32) -> u16 {
     (d * 65536 / 360) as u16
@@ -131,7 +195,7 @@ const fn ups(v: i32) -> i32 {
     v * FP / TICK_HZ as i32
 }
 
-pub static CLASS_STATS: [ClassStats; 4] = [
+pub static CLASS_STATS: [ClassStats; 5] = [
     // Battleship: slow, heavy kinetic broadsides, thick front shield.
     ClassStats {
         max_speed: ups(30),
@@ -160,6 +224,8 @@ pub static CLASS_STATS: [ClassStats; 4] = [
             cooldown: 10,
             chance: 200,
         },
+        hangar: 0,
+        signature: Signature::Salvo,
     },
     // Cruiser: beam lance forward, missile rack, middling everything.
     ClassStats {
@@ -194,6 +260,8 @@ pub static CLASS_STATS: [ClassStats; 4] = [
             cooldown: 10,
             chance: 250,
         },
+        hangar: 0,
+        signature: Signature::Torpedoes,
     },
     // Destroyer: fast, turreted autocannons, strong point defense.
     ClassStats {
@@ -213,7 +281,7 @@ pub static CLASS_STATS: [ClassStats; 4] = [
             range: 1200 * FP,
             arc_half: deg(180),
             cooldown: 10,
-            damage: 70,
+            damage: 90,
             accuracy: 700,
             stress: 20,
         },
@@ -223,6 +291,8 @@ pub static CLASS_STATS: [ClassStats; 4] = [
             cooldown: 4,
             chance: 550,
         },
+        hangar: 0,
+        signature: Signature::Afterburn,
     },
     // Flagship: a tougher battleship whose loss shakes the whole fleet.
     ClassStats {
@@ -252,6 +322,39 @@ pub static CLASS_STATS: [ClassStats; 4] = [
             cooldown: 8,
             chance: 250,
         },
+        hangar: 0,
+        signature: Signature::Salvo,
+    },
+    // Carrier: slow, light guns, strong point defense, two fighter wings.
+    ClassStats {
+        max_speed: ups(35),
+        accel: 7,
+        turn_rate: deg(15) / TICK_HZ as u16,
+        radius: 65 * FP,
+        hull: 5000,
+        shield: [2200, 1600, 800],
+        shield_regen: 9,
+        armor: 35,
+        max_stress: 2400,
+        stress_decay: 10,
+        cost: 9,
+        primary: Weapon {
+            dtype: DamageType::Kinetic,
+            range: 1200 * FP,
+            arc_half: deg(180),
+            cooldown: 20,
+            damage: 90,
+            accuracy: 700,
+            stress: 30,
+        },
+        missiles: None,
+        pd: PointDefense {
+            range: 600 * FP,
+            cooldown: 6,
+            chance: 400,
+        },
+        hangar: 2,
+        signature: Signature::Scramble,
     },
 ];
 
@@ -357,6 +460,10 @@ pub enum Command {
     Retreat {
         group: u16,
     },
+    /// Use the group's signature move (each ship by its own class).
+    Signature {
+        group: u16,
+    },
 }
 
 impl Command {
@@ -376,7 +483,8 @@ impl Command {
             | Command::FocusPart { group, .. }
             | Command::SetDoctrine { group, .. }
             | Command::CommitReserve { group }
-            | Command::Retreat { group } => group,
+            | Command::Retreat { group }
+            | Command::Signature { group } => group,
         }
     }
 }
@@ -391,12 +499,13 @@ pub enum CommandError {
     NotInReserve,
     BadTarget,
     BattleOver,
+    SignatureNotReady,
 }
 
 /// Event kinds, shared with the C interface.
 pub mod ev {
     pub const FIRE: u8 = 1; // a = shooter, b = target, c = 1 if hit, d = damage type
-    pub const MISSILE_LAUNCH: u8 = 2; // a = shooter, b = missile id, c = target
+    pub const MISSILE_LAUNCH: u8 = 2; // a = shooter, b = missile id, c = target, d = 1 for a torpedo
     pub const MISSILE_INTERCEPTED: u8 = 3; // a = point-defense ship, b = missile id
     pub const MISSILE_HIT: u8 = 4; // a = missile id, b = target
     pub const SHIP_KILLED: u8 = 5; // a = ship, b = killer ship (or u32::MAX)
@@ -409,6 +518,12 @@ pub mod ev {
     pub const PULSE: u8 = 12; // c = pulse number
     pub const FLAGSHIP_LOST: u8 = 13; // a = ship, b = side
     pub const BATTLE_OVER: u8 = 14; // c = winner (0, 1, or -1 draw)
+    pub const SIGNATURE_CHARGING: u8 = 15; // a = group, c = ticks until it fires
+    pub const SIGNATURE_FIRED: u8 = 16; // a = group
+    pub const WING_LAUNCHED: u8 = 17; // a = wing, b = carrier
+    pub const FIGHTER_DOWN: u8 = 18; // a = wing, b = shooter ship, or wing | 1<<31
+    pub const WING_STRIKE: u8 = 19; // a = wing, b = target ship, c = damage
+    pub const WING_LOST: u8 = 20; // a = wing
 }
 
 /// One simulation event. `#[repr(C)]` so the engine can read the list directly.

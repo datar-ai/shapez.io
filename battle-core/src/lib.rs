@@ -1,7 +1,8 @@
 //! battlecore: headless, deterministic fleet-battle simulation core.
 //!
 //! The player commands battle groups; ships are light simulated objects;
-//! fighters, gunfire and debris are left to the renderer. The simulation runs
+//! fighter wings fly on their own height layer; gunfire and debris are left
+//! to the renderer. The simulation runs
 //! at a fixed 20 steps per second in integer math and pauses every pulse
 //! (15 s) so the player can spend command points.
 //!
@@ -14,6 +15,7 @@ pub mod fixed;
 pub mod grid;
 pub mod replay;
 pub mod scenario;
+pub mod terrain;
 pub mod types;
 
 pub use battle::{Battle, Group, GroupStatus, Outcome};

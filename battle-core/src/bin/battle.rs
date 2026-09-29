@@ -55,6 +55,7 @@ fn main() {
                     "換準則",
                     "投入預備隊",
                     "跳躍撤離",
+                    "招牌技",
                 ][e.c as usize];
                 println!("  [脈衝 {}] {} → {}", b.pulse(), g.name, verb);
             }

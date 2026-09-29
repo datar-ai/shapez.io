@@ -4,7 +4,7 @@
 //! bought until the points run out. The enemy uses exactly the same points and
 //! rules as the player, and the same code resolves battles automatically.
 
-use crate::battle::{Battle, Group, GroupStatus, ALIVE};
+use crate::battle::{Battle, Group, GroupStatus, ALIVE, W_LOST};
 use crate::fixed::*;
 use crate::types::*;
 
@@ -26,6 +26,55 @@ fn hull_permille(b: &Battle, g: &Group) -> i64 {
 
 fn dist(a: &Group, b: &Group) -> i64 {
     len((a.cx - b.cx) as i64, (a.cy - b.cy) as i64)
+}
+
+/// How much a group wants to use its signature move now, if it can.
+fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
+    if g.charging() || b.tick < g.sig_ready_at {
+        return None;
+    }
+    let d = dist(g, nearest);
+    let (mut salvo, mut torpedo, mut burner, mut carriers) = (0, 0, 0, 0);
+    for &id in &g.ships {
+        let i = id as usize;
+        if b.ships.state[i] != ALIVE {
+            continue;
+        }
+        match b.ships.stats(i).signature {
+            Signature::Salvo => salvo += 1,
+            Signature::Torpedoes => torpedo += 1,
+            Signature::Afterburn => burner += 1,
+            Signature::Scramble => carriers += 1,
+        }
+    }
+    let mut best = None;
+    let mut consider = |score: i32| best = Some(best.map_or(score, |b: i32| b.max(score)));
+    if salvo > 0 && d <= 2700 * FP as i64 {
+        consider(55);
+    }
+    if torpedo >= 3 && d <= 3400 * FP as i64 {
+        consider(50);
+    }
+    if burner * 2 > salvo + torpedo + carriers + burner
+        && matches!(g.order, Order::Flank { .. })
+        && d > 1800 * FP as i64
+    {
+        consider(45);
+    }
+    if carriers > 0 {
+        let (mut have, mut max) = (0, 0);
+        let w = &b.wings;
+        for k in 0..w.len() {
+            if g.ships.contains(&w.carrier[k]) && w.state[k] != W_LOST {
+                have += w.count[k] as i32;
+                max += WING_SIZE as i32;
+            }
+        }
+        if max > 0 && have * 2 < max && b.pulse() >= 1 {
+            consider(45);
+        }
+    }
+    best
 }
 
 pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
@@ -87,6 +136,9 @@ pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
                         Part::Weapons
                     };
                     options.push((30, Command::FocusPart { group: g.id, part }));
+                }
+                if let Some(score) = signature_score(b, g, nearest) {
+                    options.push((score, Command::Signature { group: g.id }));
                 }
                 // Anvils pin the enemy group that is closest to the flagship line.
                 if g.doctrine == Doctrine::Anvil && g.order == Order::Engage && b.pulse() >= 1 {

@@ -5,15 +5,20 @@
 //! 2. ships think in parallel, reading only last step's state: steer toward
 //!    their formation slot, pick targets, fire (hitscan hits are rolled now);
 //! 3. intents are written back in ship order;
-//! 4. missiles fly and point defense shoots at them;
-//! 5. damage is applied in a fixed order; shields, stress, cohesion update;
-//! 6. routs, retreats and the end of the battle are checked.
+//! 4. missiles fly and point defense shoots at them and at fighters;
+//! 5. fighter wings fly, dogfight and strafe (in wing order);
+//! 6. damage is applied in a fixed order; shields, stress, cohesion update;
+//! 7. routs, retreats and the end of the battle are checked.
+//!
+//! Signature moves bought at a pulse fire at the start of the step their
+//! charge runs out.
 //!
 //! Every random roll is a hash of (seed, tick, ship, salt), so the thread
 //! count never changes the result.
 
 use crate::fixed::*;
 use crate::grid::Grid;
+use crate::terrain::{self, Terrain};
 use crate::types::*;
 
 pub const ALIVE: u8 = 0;
@@ -46,6 +51,8 @@ pub struct Ships {
     pub cd_pd: Vec<u16>,
     pub state: Vec<u8>,
     pub kills: Vec<u16>,
+    /// Main guns are loaded for a signature salvo until this tick.
+    pub salvo_until: Vec<u32>,
 }
 
 impl Ships {
@@ -140,6 +147,25 @@ pub struct Group {
     pub kills: u32,
     pub damage_dealt: i64,
     pub damage_taken: i64,
+    /// Signature move: usable from this tick on.
+    pub sig_ready_at: u32,
+    /// Signature move bought and charging; fires at this tick. `NONE` when idle.
+    pub sig_fire_at: u32,
+    /// Afterburn runs until this tick.
+    pub boost_until: u32,
+    /// Value of living ships and how many of them carry heavy point defense
+    /// (destroyers, carriers); refreshed when groups re-plan. Wings use it to
+    /// pick soft targets.
+    pub alive_value: i32,
+    pub screen: u32,
+}
+
+pub const NONE: u32 = u32::MAX;
+
+impl Group {
+    pub fn charging(&self) -> bool {
+        self.sig_fire_at != NONE
+    }
 }
 
 #[derive(Default, Clone)]
@@ -153,6 +179,46 @@ pub struct Missiles {
     pub speed: Vec<i32>,
     pub life: Vec<u16>,
     pub alive: Vec<bool>,
+    /// 0 missile, 1 torpedo.
+    pub kind: Vec<u8>,
+    /// Point-defense hits still needed to stop it.
+    pub hp: Vec<u8>,
+}
+
+pub const W_DOCKED: u8 = 0;
+pub const W_OUT: u8 = 1;
+pub const W_RETURNING: u8 = 2;
+pub const W_LOST: u8 = 3;
+
+/// Fighter wings: squadrons of up to `WING_SIZE` fighters that live on their
+/// carrier, fly out to fight and come back to rearm.
+#[derive(Default, Clone)]
+pub struct Wings {
+    pub x: Vec<i32>,
+    pub y: Vec<i32>,
+    pub side: Vec<u8>,
+    pub carrier: Vec<u32>,
+    pub count: Vec<u8>,
+    pub state: Vec<u8>,
+    /// Ship being attacked, or `NONE`.
+    pub target: Vec<u32>,
+    /// Enemy wing being fought, or `NONE`.
+    pub target_wing: Vec<u32>,
+    pub cd: Vec<u16>,
+    pub rearm: Vec<u16>,
+}
+
+impl Wings {
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty()
+    }
+    #[inline]
+    pub fn flying(&self, w: usize) -> bool {
+        matches!(self.state[w], W_OUT | W_RETURNING) && self.count[w] > 0
+    }
 }
 
 impl Missiles {
@@ -200,15 +266,25 @@ struct Intent {
     cd_missile: u16,
     cd_pd: u16,
     stress: i32,
+    salvo_until: u32,
+}
+
+/// A point-defense shot at a missile or a fighter wing.
+#[derive(Clone, Copy)]
+struct Intercept {
+    ship: u32,
+    id: u32,
+    hit: bool,
+    wing: bool,
 }
 
 #[derive(Default)]
 struct ChunkOut {
     intents: Vec<Intent>,
     damages: Vec<Damage>,
-    launches: Vec<(u32, u32)>,
-    /// Point-defense shots: (ship, missile, hit).
-    intercepts: Vec<(u32, u32, bool)>,
+    /// (shooter, target, kind): kind 0 missile, 1 torpedo.
+    launches: Vec<(u32, u32, u8)>,
+    intercepts: Vec<Intercept>,
     events: Vec<Event>,
 }
 
@@ -220,6 +296,8 @@ pub struct Battle {
     pub ships: Ships,
     pub groups: Vec<Group>,
     pub missiles: Missiles,
+    pub wings: Wings,
+    pub terrain: Terrain,
     pub sides: [SideState; 2],
     /// Events produced by the most recent step (and commands issued since).
     pub events: Vec<Event>,
@@ -231,6 +309,7 @@ pub struct Battle {
     started: bool,
     grid: Grid,
     missile_grid: Grid,
+    wing_grid: Grid,
 }
 
 impl Battle {
@@ -242,6 +321,8 @@ impl Battle {
             ships: Ships::default(),
             groups: Vec::new(),
             missiles: Missiles::default(),
+            wings: Wings::default(),
+            terrain: Terrain::default(),
             sides: [SideState {
                 command_points: 0,
                 ai: true,
@@ -253,6 +334,7 @@ impl Battle {
             started: false,
             grid: Grid::default(),
             missile_grid: Grid::default(),
+            wing_grid: Grid::default(),
         }
     }
 
@@ -283,6 +365,7 @@ impl Battle {
         let mut ids = Vec::new();
         let (mut cost, mut hull) = (0, 0i64);
         let (mut speed, mut range, mut turn) = (i32::MAX, i32::MAX, u16::MAX);
+        let mut has_carrier = false;
         let mut k: i64 = 0;
         for &(class, count) in ships {
             let st = class.stats();
@@ -317,14 +400,33 @@ impl Battle {
                 s.cd_pd.push(0);
                 s.state.push(ALIVE);
                 s.kills.push(0);
+                s.salvo_until.push(0);
+                for _ in 0..st.hangar {
+                    let w = &mut self.wings;
+                    w.x.push(x + wx as i32);
+                    w.y.push(y + wy as i32);
+                    w.side.push(side);
+                    w.carrier.push(id);
+                    w.count.push(WING_SIZE);
+                    w.state.push(W_DOCKED);
+                    w.target.push(NONE);
+                    w.target_wing.push(NONE);
+                    w.cd.push(0);
+                    w.rearm.push(REARM_TICKS);
+                }
                 ids.push(id);
                 cost += st.cost;
                 hull += st.hull as i64;
                 speed = speed.min(st.max_speed);
                 range = range.min(st.primary.range);
+                has_carrier |= st.hangar > 0;
                 turn = turn.min(st.turn_rate);
                 k += 1;
             }
+        }
+        if has_carrier {
+            // Carriers stand off and let their wings do the fighting.
+            range = CARRIER_STANDOFF;
         }
         self.groups.push(Group {
             id: gid,
@@ -358,6 +460,11 @@ impl Battle {
             kills: 0,
             damage_dealt: 0,
             damage_taken: 0,
+            sig_ready_at: 0,
+            sig_fire_at: NONE,
+            boost_until: 0,
+            alive_value: cost,
+            screen: 0,
         });
         gid
     }
@@ -385,6 +492,11 @@ impl Battle {
         let is_reserve = g.status == GroupStatus::Reserve;
         match cmd {
             Command::CommitReserve { .. } if !is_reserve => return Err(CommandError::NotInReserve),
+            Command::Signature { .. }
+                if is_reserve || g.charging() || self.tick < g.sig_ready_at =>
+            {
+                return Err(CommandError::SignatureNotReady)
+            }
             Command::Attack { target, .. } | Command::Flank { target, .. } => {
                 let t = self
                     .groups
@@ -445,6 +557,17 @@ impl Battle {
                     .push(Event::new(tick, ev::RETREAT_STARTED, gi as u32, 0, 0));
                 8
             }
+            Command::Signature { .. } => {
+                g.sig_fire_at = tick + SIG_CHARGE_TICKS;
+                self.events.push(Event::new(
+                    tick,
+                    ev::SIGNATURE_CHARGING,
+                    gi as u32,
+                    0,
+                    SIG_CHARGE_TICKS as i32,
+                ));
+                9
+            }
         };
         self.events
             .push(Event::new(tick, ev::COMMAND, gi as u32, side as u32, kind));
@@ -486,6 +609,10 @@ impl Battle {
         self.grid.rebuild(&s.x, &s.y, |i| s.state[i] == ALIVE);
         let ms = &self.missiles;
         self.missile_grid.rebuild(&ms.x, &ms.y, |k| ms.alive[k]);
+        let ws = &self.wings;
+        self.wing_grid.rebuild(&ws.x, &ws.y, |w| ws.flying(w));
+        let mut launches = Vec::new();
+        self.fire_signatures(&mut launches);
         if self.tick.is_multiple_of(GROUP_THINK_TICKS) {
             self.plan_groups();
         }
@@ -493,7 +620,6 @@ impl Battle {
 
         let out = self.ship_phase();
         let mut damages = Vec::new();
-        let mut launches = Vec::new();
         let mut intercepts = Vec::new();
         {
             let s = &mut self.ships;
@@ -510,6 +636,7 @@ impl Battle {
                     s.cd_missile[i] = it.cd_missile;
                     s.cd_pd[i] = it.cd_pd;
                     s.stress[i] = it.stress;
+                    s.salvo_until[i] = it.salvo_until;
                     i += 1;
                 }
                 damages.extend(chunk.damages);
@@ -519,6 +646,7 @@ impl Battle {
             }
         }
         self.missile_phase(&intercepts, &mut damages);
+        self.wing_phase(&mut damages);
         self.launch_missiles(&launches);
         for d in &damages {
             self.apply_damage(d);
@@ -578,6 +706,7 @@ impl Battle {
         for gi in 0..self.groups.len() {
             let (mut sx, mut sy, mut n) = (0i64, 0i64, 0i64);
             let (mut speed, mut turn) = (i32::MAX, u16::MAX);
+            let (mut value, mut screen) = (0, 0);
             for &id in &self.groups[gi].ships {
                 let i = id as usize;
                 if self.ships.state[i] != ALIVE {
@@ -587,6 +716,10 @@ impl Battle {
                 sy += self.ships.y[i] as i64;
                 n += 1;
                 let st = self.ships.stats(i);
+                value += st.cost;
+                if st.pd.chance >= 400 {
+                    screen += 1;
+                }
                 let engine_hit = self.ships.parts[i] & Part::Engine as u8 != 0;
                 speed = speed.min(if engine_hit {
                     st.max_speed / 2
@@ -596,6 +729,8 @@ impl Battle {
                 turn = turn.min(st.turn_rate);
             }
             let g = &mut self.groups[gi];
+            g.alive_value = value;
+            g.screen = screen;
             if n > 0 {
                 g.cx = (sx / n) as i32;
                 g.cy = (sy / n) as i32;
@@ -701,6 +836,7 @@ impl Battle {
     }
 
     fn move_anchors(&mut self) {
+        let tick = self.tick;
         for g in &mut self.groups {
             if !matches!(g.status, GroupStatus::Active | GroupStatus::Routed) {
                 continue;
@@ -713,6 +849,9 @@ impl Battle {
             // Keep the anchor on a leash so it never runs away from slow ships.
             let lag = len((g.anchor_x - g.cx) as i64, (g.anchor_y - g.cy) as i64);
             let mut v = g.speed as i64;
+            if tick < g.boost_until {
+                v *= 2;
+            }
             if lag > 600 * FP as i64 {
                 v /= 3;
             }
@@ -770,6 +909,7 @@ impl Battle {
             cd_missile: s.cd_missile[i],
             cd_pd: s.cd_pd[i],
             stress: s.stress[i],
+            salvo_until: s.salvo_until[i],
         };
         if s.state[i] != ALIVE {
             out.intents.push(it);
@@ -778,12 +918,24 @@ impl Battle {
         let st = s.stats(i);
         let g = &self.groups[s.group[i] as usize];
         let engine_hit = s.parts[i] & Part::Engine as u8 != 0;
-        let (max_speed, turn) = if engine_hit {
+        let (mut max_speed, turn) = if engine_hit {
             (st.max_speed / 2, (st.turn_rate / 2).max(1))
         } else {
             (st.max_speed, st.turn_rate)
         };
+        let mut accel = st.accel as i64;
+        if self.terrain.at(s.x[i], s.y[i]) == terrain::ASTEROIDS {
+            max_speed = max_speed * 6 / 10;
+        }
+        if self.tick < g.boost_until && st.signature == Signature::Afterburn {
+            max_speed *= 2;
+            accel *= 2;
+        }
         let (x, y) = (s.x[i] as i64, s.y[i] as i64);
+        // Ships inside a nebula can only be seen from close by.
+        let visible = |j: usize, d: i64| {
+            d <= terrain::NEBULA_SIGHT as i64 || self.terrain.at(s.x[j], s.y[j]) != terrain::NEBULA
+        };
 
         // Steering: chase the formation slot around the group anchor.
         let (ox, oy) = rotate(s.slot_dx[i] as i64, s.slot_dy[i] as i64, g.facing);
@@ -826,7 +978,6 @@ impl Battle {
             }
             checked < 24
         });
-        let accel = st.accel as i64;
         it.vx = (s.vx[i] as i64 + (want_vx - s.vx[i] as i64).clamp(-accel, accel)) as i32;
         it.vy = (s.vy[i] as i64 + (want_vy - s.vy[i] as i64).clamp(-accel, accel)) as i32;
         it.x = s.x[i] + it.vx;
@@ -852,7 +1003,7 @@ impl Battle {
                             continue;
                         }
                         let d = len(s.x[ju] as i64 - x, s.y[ju] as i64 - y);
-                        if d <= reach as i64 && d < best.0 {
+                        if d <= reach as i64 && d < best.0 && visible(ju, d) {
                             best = (d, j);
                         }
                     }
@@ -866,7 +1017,7 @@ impl Battle {
                     let ju = j as usize;
                     if s.side[ju] != s.side[i] {
                         let d = len(s.x[ju] as i64 - x, s.y[ju] as i64 - y);
-                        if d <= reach as i64 && d < best.0 {
+                        if d <= reach as i64 && d < best.0 && visible(ju, d) {
                             best = (d, j);
                         }
                     }
@@ -885,6 +1036,11 @@ impl Battle {
             let (tx, ty) = (s.x[t] as i64 - x, s.y[t] as i64 - y);
             tdist = len(tx, ty);
             tbear = atan2(ty, tx);
+            if !visible(t, tdist) {
+                target = u32::MAX;
+                it.target = target;
+                tdist = i64::MAX;
+            }
         }
         let desired = if tdist <= reach as i64 * 11 / 10 {
             tbear
@@ -904,14 +1060,28 @@ impl Battle {
                 g.status,
                 GroupStatus::Retreating { .. } | GroupStatus::Routed
             );
-        if can_fire && target_ok(target) {
+        // Salvo guns hold their fire while the signature move charges.
+        let holding = g.charging() && st.signature == Signature::Salvo;
+        let salvo = s.salvo_until[i] > self.tick;
+        if can_fire && !holding && target_ok(target) {
             let t = target as usize;
             let w = &st.primary;
+            let range = if salvo {
+                w.range as i64 * 13 / 10
+            } else {
+                w.range as i64
+            };
             if it.cd_primary == 0
-                && tdist <= w.range as i64
+                && tdist <= range
                 && angle_diff(tbear, it.heading).abs() <= w.arc_half as i32
             {
                 let mut acc = w.accuracy;
+                if salvo {
+                    acc += 150;
+                }
+                if self.terrain.at(s.x[t], s.y[t]) == terrain::ASTEROIDS {
+                    acc -= terrain::ASTEROID_COVER;
+                }
                 acc += (s.stats(t).radius - 35 * FP) * 5 / FP;
                 if tdist > w.range as i64 * 6 / 10 {
                     acc -= 150;
@@ -925,17 +1095,22 @@ impl Battle {
                 let hit = roll(self.seed, self.tick, i as u32, 1, acc);
                 let mut e = Event::new(self.tick, ev::FIRE, i as u32, target, hit as i32);
                 e.d = w.dtype as u8;
-                out.events.push(e);
+                if salvo {
+                    e.c |= 2;
+                    it.salvo_until = 0;
+                    it.stress += st.max_stress / 2;
+                }
                 if hit {
                     out.damages.push(Damage {
                         target,
                         src: i as u32,
-                        amount: w.damage,
+                        amount: if salvo { w.damage * 3 } else { w.damage },
                         dtype: w.dtype,
                         from_x: s.x[i],
                         from_y: s.y[i],
                     });
                 }
+                out.events.push(e);
                 let weapons_hit = s.parts[i] & Part::Weapons as u8 != 0;
                 it.cd_primary = if weapons_hit {
                     w.cooldown * 2
@@ -946,45 +1121,391 @@ impl Battle {
             }
             if let Some(m) = st.missiles {
                 if it.cd_missile == 0 && tdist <= m.range as i64 {
-                    out.launches.push((i as u32, target));
+                    out.launches.push((i as u32, target, 0));
                     it.cd_missile = m.cooldown;
                 }
             }
         }
-        // Point defense: shoot at the nearest enemy missile in range.
+        // Point defense: shoot at the first enemy missile in range, else at a fighter wing.
         if it.cd_pd > 0 {
             it.cd_pd -= 1;
-        } else if !self.missiles.is_empty() {
+        } else {
             let pd = st.pd;
-            let ms = &self.missiles;
-            let mut shot: Option<u32> = None;
-            self.missile_grid.query(s.x[i], s.y[i], pd.range, |k| {
-                let ku = k as usize;
-                if ms.alive[ku]
-                    && ms.side[ku] != s.side[i]
-                    && len(ms.x[ku] as i64 - x, ms.y[ku] as i64 - y) <= pd.range as i64
-                {
-                    shot = Some(k);
-                    return false;
-                }
-                true
-            });
-            if let Some(k) = shot {
+            let mut shot: Option<(u32, bool)> = None;
+            if !self.missiles.is_empty() {
+                let ms = &self.missiles;
+                self.missile_grid.query(s.x[i], s.y[i], pd.range, |k| {
+                    let ku = k as usize;
+                    if ms.alive[ku]
+                        && ms.side[ku] != s.side[i]
+                        && len(ms.x[ku] as i64 - x, ms.y[ku] as i64 - y) <= pd.range as i64
+                    {
+                        shot = Some((k, false));
+                        return false;
+                    }
+                    true
+                });
+            }
+            if shot.is_none() && !self.wings.is_empty() {
+                let ws = &self.wings;
+                self.wing_grid.query(s.x[i], s.y[i], pd.range, |w| {
+                    let wu = w as usize;
+                    if ws.side[wu] != s.side[i]
+                        && len(ws.x[wu] as i64 - x, ws.y[wu] as i64 - y) <= pd.range as i64
+                    {
+                        shot = Some((w, true));
+                        return false;
+                    }
+                    true
+                });
+            }
+            if let Some((id, wing)) = shot {
                 it.cd_pd = pd.cooldown;
-                out.intercepts.push((
-                    i as u32,
-                    k,
-                    roll(self.seed, self.tick, i as u32, 2, pd.chance),
-                ));
+                out.intercepts.push(Intercept {
+                    ship: i as u32,
+                    id,
+                    hit: roll(
+                        self.seed,
+                        self.tick,
+                        i as u32,
+                        2,
+                        if wing {
+                            pd.chance * PD_VS_FIGHTER / 100
+                        } else {
+                            pd.chance
+                        },
+                    ),
+                    wing,
+                });
             }
         }
         out.intents.push(it);
     }
 
-    fn launch_missiles(&mut self, launches: &[(u32, u32)]) {
-        for &(src, target) in launches {
+    /// Signature moves whose charge runs out this step take effect now.
+    fn fire_signatures(&mut self, launches: &mut Vec<(u32, u32, u8)>) {
+        let tick = self.tick;
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].sig_fire_at != tick {
+                continue;
+            }
+            let g = &mut self.groups[gi];
+            g.sig_fire_at = NONE;
+            g.sig_ready_at = tick + SIG_COOLDOWN_TICKS;
+            if !matches!(g.status, GroupStatus::Active) {
+                continue;
+            }
+            let target_group = g.target_group;
+            let ships = g.ships.clone();
+            let mut boost = false;
+            for &id in &ships {
+                let i = id as usize;
+                if self.ships.state[i] != ALIVE {
+                    continue;
+                }
+                match self.ships.stats(i).signature {
+                    Signature::Salvo => self.ships.salvo_until[i] = tick + 5 * TICK_HZ,
+                    Signature::Afterburn => boost = true,
+                    Signature::Torpedoes => {
+                        let t = self.torpedo_target(i, target_group);
+                        if t != NONE {
+                            launches.push((id, t, 1));
+                            launches.push((id, t, 1));
+                        }
+                    }
+                    Signature::Scramble => {
+                        for w in 0..self.wings.len() {
+                            if self.wings.carrier[w] == id && self.wings.state[w] != W_LOST {
+                                self.wings.count[w] = WING_SIZE;
+                                if self.wings.state[w] != W_OUT {
+                                    self.launch_wing(w);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if boost {
+                self.groups[gi].boost_until = tick + AFTERBURN_TICKS;
+            }
+            self.events
+                .push(Event::new(tick, ev::SIGNATURE_FIRED, gi as u32, 0, 0));
+        }
+    }
+
+    /// Torpedo target: the ship's own target, else the nearest living ship of the group's target.
+    fn torpedo_target(&self, i: usize, target_group: Option<u16>) -> u32 {
+        let s = &self.ships;
+        let t = s.target[i];
+        if t != NONE && s.state[t as usize] == ALIVE {
+            return t;
+        }
+        let Some(tg) = target_group else { return NONE };
+        let mut best = (i64::MAX, NONE);
+        for &j in &self.groups[tg as usize].ships {
+            let ju = j as usize;
+            if s.state[ju] == ALIVE {
+                let d = len((s.x[ju] - s.x[i]) as i64, (s.y[ju] - s.y[i]) as i64);
+                if d < best.0 {
+                    best = (d, j);
+                }
+            }
+        }
+        best.1
+    }
+
+    fn launch_wing(&mut self, w: usize) {
+        let ws = &mut self.wings;
+        ws.state[w] = W_OUT;
+        ws.target[w] = NONE;
+        ws.target_wing[w] = NONE;
+        ws.cd[w] = 0;
+        self.events.push(Event::new(
+            self.tick,
+            ev::WING_LAUNCHED,
+            w as u32,
+            ws.carrier[w],
+            ws.count[w] as i32,
+        ));
+    }
+
+    /// Fighter wings, updated one after another in wing order.
+    fn wing_phase(&mut self, damages: &mut Vec<Damage>) {
+        for w in 0..self.wings.len() {
+            let state = self.wings.state[w];
+            if state == W_LOST {
+                continue;
+            }
+            let c = self.wings.carrier[w] as usize;
+            let home = self.ships.state[c] == ALIVE;
+            if self.wings.count[w] == 0 || (state == W_DOCKED && !home) {
+                self.wings.count[w] = 0;
+                self.wings.state[w] = W_LOST;
+                self.events
+                    .push(Event::new(self.tick, ev::WING_LOST, w as u32, 0, 0));
+                continue;
+            }
+            let g = &self.groups[self.ships.group[c] as usize];
+            let group_fighting = g.status == GroupStatus::Active;
+            match state {
+                W_DOCKED => {
+                    let ws = &mut self.wings;
+                    ws.x[w] = self.ships.x[c];
+                    ws.y[w] = self.ships.y[c];
+                    if ws.count[w] < WING_SIZE {
+                        ws.rearm[w] = ws.rearm[w].saturating_sub(1);
+                        if ws.rearm[w] == 0 {
+                            ws.count[w] += 1;
+                            ws.rearm[w] = REARM_TICKS;
+                        }
+                    }
+                    let enemy_near = g.target_group.is_some_and(|t| {
+                        let t = &self.groups[t as usize];
+                        len((t.cx - g.cx) as i64, (t.cy - g.cy) as i64) < 6000 * FP as i64
+                    });
+                    if group_fighting && enemy_near && self.wings.count[w] >= WING_SIZE - 2 {
+                        self.launch_wing(w);
+                    }
+                }
+                W_RETURNING => {
+                    if !home {
+                        self.wings.state[w] = W_OUT;
+                        continue;
+                    }
+                    let (cx, cy) = (self.ships.x[c], self.ships.y[c]);
+                    if self.fly(w, cx, cy, self.ships.stats(c).radius) {
+                        let ws = &mut self.wings;
+                        ws.state[w] = W_DOCKED;
+                        ws.rearm[w] = REARM_TICKS;
+                    }
+                }
+                _ => {
+                    let going_home = !group_fighting || self.wings.count[w] <= WING_RETURN_AT;
+                    if home && going_home {
+                        self.wings.state[w] = W_RETURNING;
+                        continue;
+                    }
+                    self.wing_fight(w, c, damages);
+                }
+            }
+        }
+    }
+
+    /// Move a wing toward (x, y). Returns true once within `reach` of it.
+    fn fly(&mut self, w: usize, x: i32, y: i32, reach: i32) -> bool {
+        let ws = &mut self.wings;
+        let (dx, dy) = ((x - ws.x[w]) as i64, (y - ws.y[w]) as i64);
+        let d = len(dx, dy);
+        if d <= reach as i64 {
+            return true;
+        }
+        let step = (WING_SPEED as i64).min(d - reach as i64 / 2);
+        ws.x[w] += (dx * step / d) as i32;
+        ws.y[w] += (dy * step / d) as i32;
+        len((x - ws.x[w]) as i64, (y - ws.y[w]) as i64) <= reach as i64
+    }
+
+    fn wing_fight(&mut self, w: usize, carrier: usize, damages: &mut Vec<Damage>) {
+        let side = self.wings.side[w];
+        let (wx, wy) = (self.wings.x[w] as i64, self.wings.y[w] as i64);
+        let (hx, hy) = (self.ships.x[carrier] as i64, self.ships.y[carrier] as i64);
+        self.wings.cd[w] = self.wings.cd[w].saturating_sub(1);
+        // Retarget twice a second, or when the target is gone.
+        let tw = self.wings.target_wing[w];
+        let tw_ok = tw != NONE && self.wings.flying(tw as usize);
+        let t = self.wings.target[w];
+        let t_ok = t != NONE && self.ships.state[t as usize] == ALIVE;
+        if (self.tick + w as u32).is_multiple_of(10) || !(tw_ok || t_ok) {
+            // Enemy fighters near our carrier or near us come first.
+            let mut best = (i64::MAX, NONE);
+            let ws = &self.wings;
+            for o in 0..ws.len() {
+                if ws.side[o] == side || !ws.flying(o) {
+                    continue;
+                }
+                let (ox, oy) = (ws.x[o] as i64, ws.y[o] as i64);
+                let d = len(ox - wx, oy - wy);
+                let near = d < 1500 * FP as i64 || len(ox - hx, oy - hy) < 1500 * FP as i64;
+                if near && d < best.0 {
+                    best = (d, o as u32);
+                }
+            }
+            self.wings.target_wing[w] = best.1;
+            if best.1 == NONE {
+                self.wings.target[w] = self.wing_ship_target(w, carrier);
+            }
+        }
+        let tw = self.wings.target_wing[w];
+        if tw != NONE && self.wings.flying(tw as usize) {
+            let o = tw as usize;
+            let (ox, oy) = (self.wings.x[o], self.wings.y[o]);
+            if self.fly(w, ox, oy, WING_DOGFIGHT_RANGE) && self.wings.cd[w] == 0 {
+                self.wings.cd[w] = DOGFIGHT_TICKS;
+                let mut kills = 0;
+                for f in 0..self.wings.count[w] {
+                    if roll(
+                        self.seed,
+                        self.tick,
+                        w as u32,
+                        7 + f as u32 * 16,
+                        DOGFIGHT_CHANCE,
+                    ) {
+                        kills += 1;
+                    }
+                }
+                let kills = kills.min(self.wings.count[o]);
+                self.wings.count[o] -= kills;
+                for _ in 0..kills {
+                    self.events.push(Event::new(
+                        self.tick,
+                        ev::FIGHTER_DOWN,
+                        o as u32,
+                        w as u32 | 1 << 31,
+                        0,
+                    ));
+                }
+            }
+            return;
+        }
+        self.wings.target_wing[w] = NONE;
+        let t = self.wings.target[w];
+        if t == NONE || self.ships.state[t as usize] != ALIVE {
+            // Nothing to hit: circle home.
+            let (hx, hy) = (hx as i32, hy as i32);
+            self.fly(w, hx, hy, 400 * FP);
+            return;
+        }
+        let tu = t as usize;
+        let (tx, ty) = (self.ships.x[tu], self.ships.y[tu]);
+        if self.fly(w, tx, ty, WING_STRIKE_RANGE) && self.wings.cd[w] == 0 {
+            self.wings.cd[w] = WING_PASS_TICKS;
+            let amount = self.wings.count[w] as i32 * FIGHTER_DAMAGE;
+            damages.push(Damage {
+                target: t,
+                src: carrier as u32,
+                amount,
+                dtype: DamageType::Missile,
+                from_x: self.wings.x[w],
+                from_y: self.wings.y[w],
+            });
+            self.events
+                .push(Event::new(self.tick, ev::WING_STRIKE, w as u32, t, amount));
+        }
+    }
+
+    /// A ship for a wing to strike: from the carrier group's target first, else the nearest enemy.
+    fn wing_ship_target(&self, w: usize, carrier: usize) -> u32 {
+        let s = &self.ships;
+        let (wx, wy) = (self.wings.x[w] as i64, self.wings.y[w] as i64);
+        let side = self.wings.side[w];
+        let visible = |j: usize, d: i64| {
+            d <= terrain::NEBULA_SIGHT as i64 || self.terrain.at(s.x[j], s.y[j]) != terrain::NEBULA
+        };
+        let mut best = (i64::MAX, NONE);
+        // Strike the most valuable group within reach that has the thinnest
+        // point-defense screen.
+        let reach = 7000 * FP as i64;
+        let (hx, hy) = (s.x[carrier] as i64, s.y[carrier] as i64);
+        let prey = self
+            .groups
+            .iter()
+            .filter(|g| {
+                g.side != side
+                    && g.status.in_battle()
+                    && g.alive > 0
+                    && len(g.cx as i64 - hx, g.cy as i64 - hy) <= reach
+            })
+            .max_by_key(|g| {
+                (
+                    g.alive_value as i64 * 1000 / (1 + g.screen as i64 * 2),
+                    std::cmp::Reverse(g.id),
+                )
+            })
+            .map(|g| g.id)
+            .or(self.groups[s.group[carrier] as usize].target_group);
+        if let Some(tg) = prey {
+            let list = &self.groups[tg as usize].ships;
+            let n = list.len();
+            if n > 0 {
+                let start = (hash(self.seed, self.tick, w as u32, 8) % n as u64) as usize;
+                for k in 0..n.min(24) {
+                    let j = list[(start + k) % n] as usize;
+                    if s.state[j] != ALIVE {
+                        continue;
+                    }
+                    let d = len(s.x[j] as i64 - wx, s.y[j] as i64 - wy);
+                    if d < best.0 && visible(j, d) {
+                        best = (d, j as u32);
+                    }
+                }
+            }
+        }
+        if best.1 == NONE {
+            let mut seen = 0;
+            self.grid
+                .query(self.wings.x[w], self.wings.y[w], 5000 * FP, |j| {
+                    seen += 1;
+                    let ju = j as usize;
+                    if s.side[ju] != side {
+                        let d = len(s.x[ju] as i64 - wx, s.y[ju] as i64 - wy);
+                        if d < best.0 && visible(ju, d) {
+                            best = (d, j);
+                        }
+                    }
+                    seen < 96
+                });
+        }
+        best.1
+    }
+
+    fn launch_missiles(&mut self, launches: &[(u32, u32, u8)]) {
+        for &(src, target, kind) in launches {
             let i = src as usize;
-            let m = self.ships.stats(i).missiles.expect("launcher without rack");
+            let m = if kind == 1 {
+                TORPEDO
+            } else {
+                self.ships.stats(i).missiles.expect("launcher without rack")
+            };
             let id = self.missiles.len() as u32;
             let ms = &mut self.missiles;
             ms.x.push(self.ships.x[i]);
@@ -997,30 +1518,51 @@ impl Battle {
             ms.life
                 .push(((m.range as i64 * 3 / 2) / m.speed as i64) as u16);
             ms.alive.push(true);
-            self.events.push(Event::new(
-                self.tick,
-                ev::MISSILE_LAUNCH,
-                src,
-                id,
-                target as i32,
-            ));
+            ms.kind.push(kind);
+            ms.hp.push(if kind == 1 { TORPEDO_HP } else { 1 });
+            let mut e = Event::new(self.tick, ev::MISSILE_LAUNCH, src, id, target as i32);
+            e.d = kind;
+            self.events.push(e);
         }
     }
 
-    fn missile_phase(&mut self, intercepts: &[(u32, u32, bool)], damages: &mut Vec<Damage>) {
+    fn missile_phase(&mut self, intercepts: &[Intercept], damages: &mut Vec<Damage>) {
+        // Point-defense hits land in ship order; hits on an already stopped
+        // missile or an empty wing are wasted.
+        for p in intercepts {
+            if !p.hit {
+                continue;
+            }
+            let k = p.id as usize;
+            if p.wing {
+                let ws = &mut self.wings;
+                if ws.count[k] > 0 {
+                    ws.count[k] -= 1;
+                    self.events
+                        .push(Event::new(self.tick, ev::FIGHTER_DOWN, p.id, p.ship, 0));
+                }
+            } else {
+                let ms = &mut self.missiles;
+                if ms.alive[k] {
+                    ms.hp[k] -= 1;
+                    if ms.hp[k] == 0 {
+                        ms.alive[k] = false;
+                        self.events.push(Event::new(
+                            self.tick,
+                            ev::MISSILE_INTERCEPTED,
+                            p.ship,
+                            p.id,
+                            0,
+                        ));
+                    }
+                }
+            }
+        }
         if self.missiles.is_empty() {
             return;
         }
         let s = &self.ships;
         let ms = &mut self.missiles;
-        // Point-defense hits land in ship order; a second hit on the same missile is wasted.
-        for &(i, k, hit) in intercepts {
-            if hit && ms.alive[k as usize] {
-                ms.alive[k as usize] = false;
-                self.events
-                    .push(Event::new(self.tick, ev::MISSILE_INTERCEPTED, i, k, 0));
-            }
-        }
         // Flight.
         for k in 0..ms.len() {
             if !ms.alive[k] {
@@ -1029,6 +1571,25 @@ impl Battle {
             ms.life[k] = ms.life[k].saturating_sub(1);
             if ms.life[k] == 0 {
                 ms.alive[k] = false;
+                continue;
+            }
+            if self.terrain.at(ms.x[k], ms.y[k]) == terrain::ASTEROIDS
+                && roll(
+                    self.seed,
+                    self.tick,
+                    k as u32,
+                    6,
+                    terrain::ASTEROID_MISSILE_LOSS,
+                )
+            {
+                ms.alive[k] = false;
+                self.events.push(Event::new(
+                    self.tick,
+                    ev::MISSILE_INTERCEPTED,
+                    u32::MAX,
+                    k as u32,
+                    0,
+                ));
                 continue;
             }
             let t = ms.target[k] as usize;
@@ -1089,6 +1650,9 @@ impl Battle {
             3
         };
         let mut raw = d.amount as i64;
+        if d.dtype == DamageType::Beam && self.terrain.at(s.x[t], s.y[t]) == terrain::NEBULA {
+            raw /= 2;
+        }
         let shields_up = s.overload[t] == 0 && s.parts[t] & Part::ShieldGen as u8 == 0;
         if shields_up && s.shield[t][q] > 0 {
             let mult = d.dtype.vs_shield();
@@ -1200,7 +1764,10 @@ impl Battle {
             }
             if s.shield_delay[i] > 0 {
                 s.shield_delay[i] -= 1;
-            } else if s.overload[i] == 0 && s.parts[i] & Part::ShieldGen as u8 == 0 {
+            } else if s.overload[i] == 0
+                && s.parts[i] & Part::ShieldGen as u8 == 0
+                && self.terrain.at(s.x[i], s.y[i]) != terrain::NEBULA
+            {
                 let max = [st.shield[0], st.shield[1], st.shield[2], st.shield[1]];
                 for q in 0..4 {
                     s.shield[i][q] = (s.shield[i][q] + st.shield_regen).min(max[q]);
@@ -1339,6 +1906,18 @@ impl Battle {
             eat(m.x[k] as i64);
             eat(m.y[k] as i64);
             eat(m.alive[k] as i64);
+            eat(m.hp[k] as i64);
+        }
+        let w = &self.wings;
+        for k in 0..w.len() {
+            eat(w.x[k] as i64);
+            eat(w.y[k] as i64);
+            eat(w.count[k] as i64);
+            eat(w.state[k] as i64);
+        }
+        for g in &self.groups {
+            eat(g.sig_fire_at as i64);
+            eat(g.sig_ready_at as i64);
         }
         eat(self.tick as i64);
         h

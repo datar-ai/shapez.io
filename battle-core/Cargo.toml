@@ -21,3 +21,7 @@ path = "src/bin/bench.rs"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+
+[[bin]]
+name = "balance"
+path = "src/bin/balance.rs"

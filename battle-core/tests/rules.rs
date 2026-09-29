@@ -1,8 +1,10 @@
 //! Command rules and battle length.
 
-use battlecore::battle::GroupStatus;
+use battlecore::battle::{GroupStatus, W_LOST};
 use battlecore::scenario;
+use battlecore::terrain::NEBULA;
 use battlecore::types::*;
+use battlecore::Battle;
 
 /// Demo battle after deployment, with side 0 left to the test.
 fn deployed() -> battlecore::Battle {
@@ -107,6 +109,148 @@ fn demo_battles_end_in_a_few_pulses() {
         let mut b = scenario::demo(seed, 1);
         let out = b.run_auto();
         let pulses = out.tick.div_ceil(PULSE_TICKS);
-        assert!((4..=10).contains(&pulses), "seed {seed}: {pulses} pulses");
+        assert!((4..=12).contains(&pulses), "seed {seed}: {pulses} pulses");
     }
+}
+
+#[test]
+fn signature_charges_fires_then_cools_down() {
+    let mut b = deployed();
+    let g = group_of(&b, 0, false);
+    b.issue(0, Command::Signature { group: g }).unwrap();
+    assert_eq!(b.sides[0].command_points, COMMAND_POINTS - 1);
+    assert_eq!(
+        b.issue(0, Command::Signature { group: g }),
+        Err(CommandError::SignatureNotReady)
+    );
+    let bought = b.tick;
+    let mut fired = None;
+    for _ in 0..SIG_CHARGE_TICKS + 2 {
+        b.step();
+        if b.events
+            .iter()
+            .any(|e| e.kind == ev::SIGNATURE_FIRED && e.a == g as u32)
+        {
+            fired = Some(b.tick - 1);
+        }
+    }
+    assert_eq!(fired, Some(bought + SIG_CHARGE_TICKS));
+    b.run_to_pulse();
+    assert_eq!(
+        b.issue(0, Command::Signature { group: g }),
+        Err(CommandError::SignatureNotReady)
+    );
+}
+
+#[test]
+fn cruiser_signature_launches_torpedoes() {
+    let mut b = deployed();
+    let cruisers = b
+        .groups
+        .iter()
+        .find(|g| g.side == 0 && g.name.contains("鐵砧"))
+        .unwrap()
+        .id;
+    b.run_to_pulse(); // close the distance first
+    b.run_to_pulse();
+    b.issue(0, Command::Signature { group: cruisers }).unwrap();
+    let mut torpedoes = 0;
+    for _ in 0..SIG_CHARGE_TICKS + 2 {
+        b.step();
+        torpedoes += b
+            .events
+            .iter()
+            .filter(|e| e.kind == ev::MISSILE_LAUNCH && e.d == 1)
+            .count();
+    }
+    assert!(torpedoes >= 2, "torpedoes launched: {torpedoes}");
+}
+
+#[test]
+fn wings_launch_strike_and_die_with_their_carrier() {
+    let mut b = scenario::demo(2, 1);
+    let (mut launched, mut strikes) = (0, 0);
+    while b.outcome.is_none() {
+        b.step();
+        for e in &b.events {
+            launched += (e.kind == ev::WING_LAUNCHED) as u32;
+            strikes += (e.kind == ev::WING_STRIKE) as u32;
+        }
+    }
+    assert!(
+        launched >= 4 && strikes > 10,
+        "launched {launched}, strikes {strikes}"
+    );
+    for w in 0..b.wings.len() {
+        let c = b.wings.carrier[w] as usize;
+        if b.ships.state[c] == battlecore::battle::DEAD {
+            assert_eq!(b.wings.state[w], W_LOST);
+        }
+    }
+}
+
+#[test]
+fn nebula_hides_ships_beyond_close_range() {
+    let fire_count = |nebula: bool| {
+        let mut b = Battle::new(1);
+        if nebula {
+            b.terrain.paint_ellipse(NEBULA, 0, 0, 600, 600);
+        }
+        b.add_group(
+            0,
+            "gun",
+            Doctrine::Line,
+            false,
+            &[(ShipClass::Battleship, 1)],
+            -2000,
+            0,
+            0,
+        );
+        b.add_group(
+            1,
+            "hidden",
+            Doctrine::Line,
+            false,
+            &[(ShipClass::Destroyer, 1)],
+            0,
+            0,
+            0,
+        );
+        b.sides = [battlecore::battle::SideState {
+            command_points: 0,
+            ai: false,
+        }; 2];
+        b.step();
+        b.issue(0, Command::Hold { group: 0 }).unwrap();
+        b.issue(1, Command::Hold { group: 1 }).unwrap();
+        let mut shots = 0;
+        for _ in 0..200 {
+            b.step();
+            shots += b
+                .events
+                .iter()
+                .filter(|e| e.kind == ev::FIRE && e.a == 0)
+                .count();
+        }
+        shots
+    };
+    assert!(fire_count(false) > 0);
+    assert_eq!(fire_count(true), 0);
+}
+
+#[test]
+fn demo_is_roughly_balanced() {
+    let mut wins = [0; 2];
+    for seed in 1..=24 {
+        let o = scenario::demo(seed, 1).run_auto();
+        if o.winner >= 0 {
+            wins[o.winner as usize] += 1;
+        }
+    }
+    assert!(
+        wins[0] >= 6 && wins[1] >= 6,
+        "blue {} red {}",
+        wins[0],
+        wins[1]
+    );
 }

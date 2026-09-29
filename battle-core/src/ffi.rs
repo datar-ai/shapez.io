@@ -15,7 +15,27 @@ pub const BC_ERR_PANIC: i32 = -2;
 pub const BC_ERR_BAD_COMMAND: i32 = -3;
 
 /// Opaque handle.
-pub struct BcBattle(Battle);
+pub struct BcBattle(Battle, Pending);
+
+/// Events not yet handed to the engine as JSON, and the last JSON text.
+#[derive(Default)]
+pub struct Pending {
+    events: Vec<Event>,
+    json: String,
+}
+
+impl BcBattle {
+    fn collect(&mut self, from: usize) {
+        let new = self.0.events[from.min(self.0.events.len())..]
+            .iter()
+            .filter(|e| crate::replay::keep_event(e));
+        self.1.events.extend(new);
+    }
+    fn step(&mut self) {
+        self.0.step();
+        self.collect(0);
+    }
+}
 
 fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(fallback)
@@ -24,7 +44,10 @@ fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
 #[no_mangle]
 pub extern "C" fn bc_create_demo(seed: u64, scale: u32) -> *mut BcBattle {
     guard(std::ptr::null_mut(), || {
-        Box::into_raw(Box::new(BcBattle(crate::scenario::demo(seed, scale))))
+        Box::into_raw(Box::new(BcBattle(
+            crate::scenario::demo(seed, scale),
+            Pending::default(),
+        )))
     })
 }
 
@@ -68,7 +91,7 @@ pub unsafe extern "C" fn bc_step(b: *mut BcBattle, n: u32) -> i32 {
     };
     guard(BC_ERR_PANIC, || {
         for _ in 0..n {
-            b.0.step();
+            b.step();
         }
         b.0.outcome.is_none() as i32
     })
@@ -83,12 +106,20 @@ pub unsafe extern "C" fn bc_run_to_pulse(b: *mut BcBattle) -> i32 {
     let Some(b) = b.as_mut() else {
         return BC_ERR_NULL;
     };
-    guard(BC_ERR_PANIC, || b.0.run_to_pulse() as i32)
+    guard(BC_ERR_PANIC, || loop {
+        b.step();
+        if b.0.outcome.is_some() {
+            return 0;
+        }
+        if b.0.tick.is_multiple_of(PULSE_TICKS) {
+            return 1;
+        }
+    })
 }
 
 /// Issue a command. `verb`: 0 attack, 1 flank left, 2 flank right, 3 hold,
 /// 4 advance (x, y), 5 focus part (a = part bit), 6 set doctrine (a),
-/// 7 commit reserve, 8 retreat. Returns 0 or a negative error.
+/// 7 commit reserve, 8 retreat, 9 signature move. Returns 0 or a negative error.
 /// # Safety
 /// `b` must be a live handle.
 #[no_mangle]
@@ -131,11 +162,18 @@ pub unsafe extern "C" fn bc_issue(
         },
         7 => Command::CommitReserve { group },
         8 => Command::Retreat { group },
+        9 => Command::Signature { group },
         _ => return BC_ERR_BAD_COMMAND,
     };
-    guard(BC_ERR_PANIC, || match b.0.issue(side as u8, cmd) {
-        Ok(()) => BC_OK,
-        Err(e) => -10 - e as i32,
+    guard(BC_ERR_PANIC, || {
+        let before = b.0.events.len();
+        match b.0.issue(side as u8, cmd) {
+            Ok(()) => {
+                b.collect(before);
+                BC_OK
+            }
+            Err(e) => -10 - e as i32,
+        }
     })
 }
 
@@ -221,4 +259,63 @@ pub unsafe extern "C" fn bc_command_points(b: *const BcBattle, side: u32) -> i32
 #[no_mangle]
 pub unsafe extern "C" fn bc_state_hash(b: *const BcBattle) -> u64 {
     (*b).0.state_hash()
+}
+
+/// Fixed facts about the battle as UTF-8 JSON (ship classes, groups,
+/// terrain). Length from `bc_json_len`. Valid until the next call on `b`.
+/// # Safety
+/// `b` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn bc_header_json(b: *mut BcBattle) -> *const u8 {
+    let Some(b) = b.as_mut() else {
+        return std::ptr::null();
+    };
+    let mut o = String::from("{");
+    crate::replay::write_header(&mut o, &b.0);
+    o.push('}');
+    b.1.json = o;
+    b.1.json.as_ptr()
+}
+
+/// The current state as UTF-8 JSON, with the events since the last call
+/// (`e`), both sides' command points (`cp`) and, once the battle is over, the
+/// after-action report (`report`). Length from `bc_json_len`.
+/// # Safety
+/// `b` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn bc_frame_json(b: *mut BcBattle) -> *const u8 {
+    use std::fmt::Write;
+    let Some(b) = b.as_mut() else {
+        return std::ptr::null();
+    };
+    let mut o = String::new();
+    crate::replay::write_frame(&mut o, &b.0);
+    o.pop(); // reopen the frame object
+    o.push_str(",\"e\":[");
+    for (k, e) in b.1.events.drain(..).enumerate() {
+        if k > 0 {
+            o.push(',');
+        }
+        crate::replay::write_event(&mut o, &e);
+    }
+    let cp = &b.0.sides;
+    let _ = write!(
+        o,
+        "],\"cp\":[{},{}]",
+        cp[0].command_points, cp[1].command_points
+    );
+    if b.0.outcome.is_some() {
+        let _ = write!(o, ",\"report\":{}", crate::replay::report_json(&b.0));
+    }
+    o.push('}');
+    b.1.json = o;
+    b.1.json.as_ptr()
+}
+
+/// Byte length of the last JSON text.
+/// # Safety
+/// `b` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn bc_json_len(b: *const BcBattle) -> u32 {
+    (&(*b).1.json).len() as u32
 }

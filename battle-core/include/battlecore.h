@@ -30,6 +30,7 @@ extern "C" {
 #define BC_CMD_NOT_IN_RESERVE 5
 #define BC_CMD_BAD_TARGET 6
 #define BC_CMD_BATTLE_OVER 7
+#define BC_CMD_SIGNATURE_NOT_READY 8
 
 /* Command verbs for bc_issue. */
 #define BC_VERB_ATTACK 0        /* a = target group */
@@ -41,6 +42,7 @@ extern "C" {
 #define BC_VERB_SET_DOCTRINE 6  /* a = 0 line, 1 anvil, 2 hammer */
 #define BC_VERB_COMMIT_RESERVE 7
 #define BC_VERB_RETREAT 8
+#define BC_VERB_SIGNATURE 9     /* each ship uses its class's signature move */
 
 #define BC_PART_ENGINE 1
 #define BC_PART_WEAPONS 2
@@ -51,14 +53,15 @@ extern "C" {
 #define BC_CLASS_CRUISER 1
 #define BC_CLASS_DESTROYER 2
 #define BC_CLASS_FLAGSHIP 3
+#define BC_CLASS_CARRIER 4
 
 #define BC_SHIP_ALIVE 0
 #define BC_SHIP_DEAD 1
 #define BC_SHIP_ESCAPED 2
 
 /* Event kinds (fields a, b, c, d per kind). */
-#define BC_EV_FIRE 1                /* a shooter, b target, c 1 if hit, d damage type */
-#define BC_EV_MISSILE_LAUNCH 2      /* a shooter, b missile id, c target */
+#define BC_EV_FIRE 1                /* a shooter, b target, c bit0 hit, bit1 salvo; d damage type */
+#define BC_EV_MISSILE_LAUNCH 2      /* a shooter, b missile id, c target, d 1 if torpedo */
 #define BC_EV_MISSILE_INTERCEPTED 3 /* a point-defense ship, b missile id */
 #define BC_EV_MISSILE_HIT 4         /* a missile id, b target */
 #define BC_EV_SHIP_KILLED 5         /* a ship, b killer (0xFFFFFFFF if none) */
@@ -71,6 +74,12 @@ extern "C" {
 #define BC_EV_PULSE 12              /* c pulse number */
 #define BC_EV_FLAGSHIP_LOST 13      /* a ship, b side */
 #define BC_EV_BATTLE_OVER 14        /* c winner (0, 1, -1 draw) */
+#define BC_EV_SIGNATURE_CHARGING 15 /* a group, c ticks until it fires */
+#define BC_EV_SIGNATURE_FIRED 16    /* a group */
+#define BC_EV_WING_LAUNCHED 17      /* a wing, b carrier, c fighters */
+#define BC_EV_FIGHTER_DOWN 18       /* a wing, b shooter ship, or wing | 0x80000000 */
+#define BC_EV_WING_STRIKE 19        /* a wing, b target ship, c damage */
+#define BC_EV_WING_LOST 20          /* a wing */
 
 typedef struct BcBattle BcBattle;
 
@@ -118,6 +127,12 @@ uint32_t bc_tick(const BcBattle *b);
 int32_t bc_winner(const BcBattle *b);
 int32_t bc_command_points(const BcBattle *b, uint32_t side);
 uint64_t bc_state_hash(const BcBattle *b);
+
+/* JSON views (UTF-8, not NUL-terminated; length from bc_json_len). Used by
+ * the browser build; handy for tools. Valid until the next call on b. */
+const uint8_t *bc_header_json(BcBattle *b);  /* classes, groups, terrain */
+const uint8_t *bc_frame_json(BcBattle *b);   /* state + events since last call */
+uint32_t bc_json_len(const BcBattle *b);
 
 #ifdef __cplusplus
 }
