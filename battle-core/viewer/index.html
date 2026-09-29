@@ -298,8 +298,9 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   }
   function updateGroups(frame) {
     frame.g.forEach((g, i) => {
-      const [, , , , coh, st, , alive, sig, armed] = g;
-      $("gs" + i).textContent = `${STATUS[st]} · ${alive} 艘 · ${coh}`;
+      const [, , , , coh, st, , alive, sig, armed, out, docked] = g;
+      const air = out || docked ? ` · 戰機 出擊 ${out} / 機庫 ${docked}` : "";
+      $("gs" + i).textContent = `${STATUS[st]} · ${alive} 艘 · ${coh}${air}`;
       const b = $("gb" + i);
       b.style.width = (coh / 10) + "%";
       b.style.background = coh > 600 ? COL.good : coh > 250 ? COL.warn : COL.bad;

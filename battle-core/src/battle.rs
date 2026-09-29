@@ -203,6 +203,9 @@ pub struct Wings {
     pub y: Vec<i32>,
     pub side: Vec<u8>,
     pub carrier: Vec<u32>,
+    /// Place in the carrier's hangar; the carrier's wings sit next to each
+    /// other, and slot / `WING_WAVE` is the launch wave.
+    pub slot: Vec<u8>,
     pub count: Vec<u8>,
     pub state: Vec<u8>,
     /// Ship being attacked, or `NONE`.
@@ -407,12 +410,13 @@ impl Battle {
                 s.state.push(ALIVE);
                 s.kills.push(0);
                 s.salvo_until.push(0);
-                for _ in 0..st.hangar {
+                for slot in 0..st.hangar {
                     let w = &mut self.wings;
                     w.x.push(x + wx as i32);
                     w.y.push(y + wy as i32);
                     w.side.push(side);
                     w.carrier.push(id);
+                    w.slot.push(slot);
                     w.count.push(WING_SIZE);
                     w.state.push(W_DOCKED);
                     w.target.push(NONE);
@@ -737,7 +741,7 @@ impl Battle {
                 n += 1;
                 let st = self.ships.stats(i);
                 value += st.cost;
-                if st.pd.chance >= 400 {
+                if st.pd.mounts >= 5 {
                     screen += 1;
                 }
                 let engine_hit = self.ships.parts[i] & Part::Engine as u8 != 0;
@@ -1146,12 +1150,15 @@ impl Battle {
                 }
             }
         }
-        // Point defense: shoot at the first enemy missile in range, else at a fighter wing.
+        // Autocannons: each mount shoots at its own enemy missile in range,
+        // then at fighter wings; spare mounts double up on the same targets.
         if it.cd_pd > 0 {
             it.cd_pd -= 1;
         } else {
             let pd = st.pd;
-            let mut shot: Option<(u32, bool)> = None;
+            let mounts = pd.mounts as usize;
+            let mut shots: [(u32, bool); 8] = [(0, false); 8];
+            let mut n = 0;
             if !self.missiles.is_empty() {
                 let ms = &self.missiles;
                 self.missile_grid.query(s.x[i], s.y[i], pd.range, |k| {
@@ -1160,43 +1167,41 @@ impl Battle {
                         && ms.side[ku] != s.side[i]
                         && len(ms.x[ku] as i64 - x, ms.y[ku] as i64 - y) <= pd.range as i64
                     {
-                        shot = Some((k, false));
-                        return false;
+                        shots[n] = (k, false);
+                        n += 1;
                     }
-                    true
+                    n < mounts
                 });
             }
-            if shot.is_none() && !self.wings.is_empty() {
+            if n < mounts && !self.wings.is_empty() {
                 let ws = &self.wings;
                 self.wing_grid.query(s.x[i], s.y[i], pd.range, |w| {
                     let wu = w as usize;
                     if ws.side[wu] != s.side[i]
                         && len(ws.x[wu] as i64 - x, ws.y[wu] as i64 - y) <= pd.range as i64
                     {
-                        shot = Some((w, true));
-                        return false;
+                        shots[n] = (w, true);
+                        n += 1;
                     }
-                    true
+                    n < mounts
                 });
             }
-            if let Some((id, wing)) = shot {
+            if n > 0 {
                 it.cd_pd = pd.cooldown;
-                out.intercepts.push(Intercept {
-                    ship: i as u32,
-                    id,
-                    hit: roll(
-                        self.seed,
-                        self.tick,
-                        i as u32,
-                        2,
-                        if wing {
-                            pd.chance * PD_VS_FIGHTER / 100
-                        } else {
-                            pd.chance
-                        },
-                    ),
-                    wing,
-                });
+                for m in 0..mounts {
+                    let (id, wing) = shots[m % n];
+                    let chance = if wing {
+                        pd.chance * PD_VS_FIGHTER / 100
+                    } else {
+                        pd.chance
+                    };
+                    out.intercepts.push(Intercept {
+                        ship: i as u32,
+                        id,
+                        hit: roll(self.seed, self.tick, i as u32, 1_000_000 + m as u32, chance),
+                        wing,
+                    });
+                }
             }
         }
         out.intents.push(it);
@@ -1352,8 +1357,31 @@ impl Battle {
                         let t = &self.groups[t as usize];
                         len((t.cx - g.cx) as i64, (t.cy - g.cy) as i64) < 6000 * FP as i64
                     });
-                    if group_fighting && enemy_near && self.wings.count[w] >= WING_SIZE - 2 {
-                        self.launch_wing(w);
+                    // One wave at a time: the first wave in the hangar that is
+                    // armed goes out together, once no other wave is flying.
+                    // The wave's first surviving wing decides for the wave.
+                    let slot = self.wings.slot[w] as usize;
+                    let first = w - slot;
+                    let hangar = self.ships.stats(c).hangar as usize;
+                    let lead = first + slot / WING_WAVE as usize * WING_WAVE as usize;
+                    let wave = lead..(lead + WING_WAVE as usize).min(first + hangar);
+                    let ws = &self.wings;
+                    let leads = wave.clone().find(|&o| ws.state[o] != W_LOST) == Some(w);
+                    if group_fighting && enemy_near && leads {
+                        // Another wave still out fighting holds this one back;
+                        // one flying home does not.
+                        let busy = (first..first + hangar).any(|o| ws.state[o] == W_OUT);
+                        let ready = wave.clone().all(|o| {
+                            ws.state[o] == W_LOST
+                                || (ws.state[o] == W_DOCKED && ws.count[o] >= WING_SIZE - 2)
+                        }) && wave.clone().any(|o| ws.state[o] == W_DOCKED);
+                        if !busy && ready {
+                            for o in wave {
+                                if self.wings.state[o] == W_DOCKED {
+                                    self.launch_wing(o);
+                                }
+                            }
+                        }
                     }
                 }
                 W_RETURNING => {

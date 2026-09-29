@@ -5,16 +5,38 @@ use crate::fixed::ANG_HALF;
 use crate::terrain::{ASTEROIDS, NEBULA};
 use crate::types::{Doctrine, ShipClass::*};
 
-/// A mid-sized fleet battle between two identical fleets, one reserve each.
+/// Group names say the doctrine and what the group is made of.
+const GUNS: &str = "砲列：旗艦、戰艦";
+const CARRIERS: &str = "航艦：航艦、驅逐艦";
+const ANVIL: &str = "鐵砧：巡洋艦";
+const HAMMER: &str = "鐵鎚：驅逐艦";
+const RESERVE: &str = "預備：巡洋艦、驅逐艦";
+
+/// A mid-sized fleet battle between two identical fleets (36 ships each, one
+/// reserve each) deployed in different formations.
 ///
-/// Red's half of the field is blue's half turned 180 degrees around the centre,
-/// terrain included, so each fleet sees exactly the same battlefield from its
-/// own side: its anvil on the left, its hammer on the right, a nebula ahead to
-/// the left and an asteroid field on the right flank. (A left-right mirror
-/// would not be fair: it swaps which hand each fleet's wings are on.)
+/// Terrain is fair: red's half of the field is blue's half turned 180 degrees
+/// around the centre, so each side has a nebula ahead to its left and an
+/// asteroid field on its right flank.
+///
+/// - Blue spreads out: anvil on the left wing, hammer on the right wing,
+///   carriers behind the left, reserve behind the right.
+/// - Red stacks the centre in a column: anvil in front, gun line behind it,
+///   carriers at the back; hammer out on its right wing, reserve behind its
+///   left. Balance is sensitive to placement (moving red's hammer 100 units
+///   swings the result by 10-20 points), so rerun `balance` after any change.
 ///
 /// `scale` multiplies every group's ship count (scale 1 = 72 ships in total).
 pub fn demo(seed: u64, scale: u32) -> Battle {
+    demo_with(seed, scale, &RED_LAYOUT)
+}
+
+/// Red's formation: (x, y) for guns, carriers, anvil, hammer, reserve, in
+/// scale-1 world units (y is multiplied by the spread).
+pub const RED_LAYOUT: [(i32, i32); 5] =
+    [(3000, 0), (4400, 0), (2000, 0), (2550, 2000), (3600, -1800)];
+
+pub fn demo_with(seed: u64, scale: u32, red_at: &[(i32, i32); 5]) -> Battle {
     let k = scale.max(1);
     let spread = (k as f64).sqrt() as i32; // bigger fleets need more room
     let mut b = Battle::new(seed);
@@ -34,61 +56,37 @@ pub fn demo(seed: u64, scale: u32) -> Battle {
             900 * spread,
         );
     }
-    // Blue (side 0) deploys on the left facing right; red on the right facing left.
-    for (side, name, dir, facing) in [(0u8, "藍", 1, 0u16), (1, "紅", -1, ANG_HALF)] {
-        // (x, y) are blue's coordinates; red gets them turned around the centre.
-        let mut group = |label: &str, doctrine, reserve, ships: &[_], x: i32, y: i32| {
-            b.add_group(
-                side,
-                &format!("{name}・{label}"),
-                doctrine,
-                reserve,
-                ships,
-                x * dir,
-                y * dir,
-                facing,
-            );
-        };
-        group(
-            "中央砲列",
-            Doctrine::Line,
-            false,
-            &[(Flagship, k), (Battleship, 3 * k)],
-            -2400,
-            0,
-        );
-        group(
-            "航艦群",
-            Doctrine::Line,
-            false,
-            &[(Carrier, 2 * k), (Destroyer, 4 * k)],
-            -4000,
-            700 * spread,
-        );
-        group(
-            "左翼鐵砧",
-            Doctrine::Anvil,
-            false,
-            &[(Cruiser, 6 * k)],
-            -2200,
-            1800 * spread,
-        );
-        group(
-            "右翼鐵鎚",
-            Doctrine::Hammer,
-            false,
-            &[(Destroyer, 12 * k)],
-            -2200,
-            -1800 * spread,
-        );
-        group(
-            "預備隊",
-            Doctrine::Anvil,
-            true,
-            &[(Cruiser, 4 * k), (Destroyer, 4 * k)],
-            -4400,
-            -700 * spread,
-        );
-    }
+    let guns = [(Flagship, k), (Battleship, 3 * k)];
+    let carriers = [(Carrier, 2 * k), (Destroyer, 4 * k)];
+    let anvil = [(Cruiser, 6 * k)];
+    let hammer = [(Destroyer, 12 * k)];
+    let reserve = [(Cruiser, 4 * k), (Destroyer, 4 * k)];
+    let s = spread;
+    // Blue (side 0) on the left facing right. Coordinates are world units.
+    let mut blue = |label: &str, d, r, ships: &[_], x: i32, y: i32| {
+        b.add_group(0, &format!("藍・{label}"), d, r, ships, x, y, 0);
+    };
+    blue(GUNS, Doctrine::Line, false, &guns, -2400, 0);
+    blue(CARRIERS, Doctrine::Line, false, &carriers, -4000, 700 * s);
+    blue(ANVIL, Doctrine::Anvil, false, &anvil, -2200, 1800 * s);
+    blue(HAMMER, Doctrine::Hammer, false, &hammer, -2200, -1800 * s);
+    blue(RESERVE, Doctrine::Anvil, true, &reserve, -4400, -700 * s);
+    // Red (side 1) on the right facing left: its left is south, its right north.
+    let mut red = |label: &str, d, r, ships: &[_], x: i32, y: i32| {
+        b.add_group(1, &format!("紅・{label}"), d, r, ships, x, y, ANG_HALF);
+    };
+    let l = red_at;
+    red(GUNS, Doctrine::Line, false, &guns, l[0].0, l[0].1 * s);
+    red(
+        CARRIERS,
+        Doctrine::Line,
+        false,
+        &carriers,
+        l[1].0,
+        l[1].1 * s,
+    );
+    red(ANVIL, Doctrine::Anvil, false, &anvil, l[2].0, l[2].1 * s);
+    red(HAMMER, Doctrine::Hammer, false, &hammer, l[3].0, l[3].1 * s);
+    red(RESERVE, Doctrine::Anvil, true, &reserve, l[4].0, l[4].1 * s);
     b
 }

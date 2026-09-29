@@ -103,9 +103,22 @@ pub struct MissileRack {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PointDefense {
+    /// Autocannon mounts. Every class carries the same mount; they differ
+    /// only in how many. Each mount fires on its own at a missile or fighter.
+    pub mounts: u8,
     pub range: i32,
     pub cooldown: u16,
     pub chance: i32, // permille per shot
+}
+
+/// Builds a class's autocannon battery from the shared mount.
+pub const fn autocannons(mounts: u8) -> PointDefense {
+    PointDefense {
+        mounts,
+        range: 600 * FP,
+        cooldown: 10,
+        chance: 250,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,7 +138,7 @@ pub struct ClassStats {
     pub primary: Weapon,
     pub missiles: Option<MissileRack>,
     pub pd: PointDefense,
-    /// Fighter wings carried (carriers only).
+    /// Fighter wings carried (carriers only), in waves of `WING_WAVE`.
     pub hangar: u8,
     /// What this class does when its group uses its signature move.
     pub signature: Signature,
@@ -158,9 +171,12 @@ pub const AFTERBURN_TICKS: u32 = 10 * TICK_HZ;
 /// Fighter wings (the fighter height layer). Only point defense and other
 /// fighters can hit them.
 pub const WING_SIZE: u8 = 10;
+/// Wings per launch wave. A carrier holds three waves; it sends one wave at a
+/// time on its own, or all of them with its signature move.
+pub const WING_WAVE: u8 = 2;
 pub const WING_SPEED: i32 = ups(400);
 /// Point defense is less accurate against nimble fighters (percent of its missile chance).
-pub const PD_VS_FIGHTER: i32 = 35;
+pub const PD_VS_FIGHTER: i32 = 25;
 /// Fighters strafe a ship from this close.
 pub const WING_STRIKE_RANGE: i32 = 450 * FP;
 /// Wings circle their target at this distance...
@@ -226,11 +242,7 @@ pub static CLASS_STATS: [ClassStats; 5] = [
             stress: 260,
         },
         missiles: None,
-        pd: PointDefense {
-            range: 400 * FP,
-            cooldown: 10,
-            chance: 200,
-        },
+        pd: autocannons(3),
         hangar: 0,
         signature: Signature::Salvo,
     },
@@ -262,11 +274,7 @@ pub static CLASS_STATS: [ClassStats; 5] = [
             damage: 520,
             speed: ups(140),
         }),
-        pd: PointDefense {
-            range: 400 * FP,
-            cooldown: 10,
-            chance: 250,
-        },
+        pd: autocannons(2),
         hangar: 0,
         signature: Signature::Torpedoes,
     },
@@ -293,11 +301,7 @@ pub static CLASS_STATS: [ClassStats; 5] = [
             stress: 20,
         },
         missiles: None,
-        pd: PointDefense {
-            range: 700 * FP,
-            cooldown: 4,
-            chance: 550,
-        },
+        pd: autocannons(5),
         hangar: 0,
         signature: Signature::Afterburn,
     },
@@ -324,11 +328,7 @@ pub static CLASS_STATS: [ClassStats; 5] = [
             stress: 260,
         },
         missiles: None,
-        pd: PointDefense {
-            range: 500 * FP,
-            cooldown: 8,
-            chance: 250,
-        },
+        pd: autocannons(4),
         hangar: 0,
         signature: Signature::Salvo,
     },
@@ -355,12 +355,8 @@ pub static CLASS_STATS: [ClassStats; 5] = [
             stress: 30,
         },
         missiles: None,
-        pd: PointDefense {
-            range: 600 * FP,
-            cooldown: 6,
-            chance: 400,
-        },
-        hangar: 2,
+        pd: autocannons(3),
+        hangar: 3 * WING_WAVE,
         signature: Signature::Scramble,
     },
 ];

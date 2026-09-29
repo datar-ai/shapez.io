@@ -1,6 +1,6 @@
 //! Command rules and battle length.
 
-use battlecore::battle::{GroupStatus, W_LOST};
+use battlecore::battle::{GroupStatus, W_LOST, W_OUT};
 use battlecore::scenario;
 use battlecore::terrain::NEBULA;
 use battlecore::types::*;
@@ -265,4 +265,35 @@ fn demo_is_roughly_balanced() {
         wins[0],
         wins[1]
     );
+}
+
+#[test]
+fn carriers_send_one_wave_at_a_time_until_they_scramble() {
+    let mut b = scenario::demo(3, 1);
+    b.sides[0].ai = true;
+    b.sides[1].ai = true;
+    let mut scrambled = vec![false; b.groups.len()];
+    let mut launches = 0;
+    while b.outcome.is_none() && b.tick < 90 * TICK_HZ {
+        b.step();
+        for e in &b.events {
+            if e.kind == ev::SIGNATURE_FIRED {
+                scrambled[e.a as usize] = true;
+            }
+            launches += (e.kind == ev::WING_LAUNCHED) as u32;
+        }
+        let w = &b.wings;
+        for c in 0..b.ships.len() {
+            let g = b.ships.group[c] as usize;
+            let out = (0..w.len())
+                .filter(|&k| w.carrier[k] == c as u32 && w.state[k] == W_OUT)
+                .count();
+            assert!(
+                scrambled[g] || out <= WING_WAVE as usize,
+                "tick {}: carrier {c} has {out} wings out",
+                b.tick
+            );
+        }
+    }
+    assert!(launches >= 4, "launches {launches}");
 }

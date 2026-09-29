@@ -4,7 +4,7 @@
 //! bought until the points run out. The enemy uses exactly the same points and
 //! rules as the player, and the same code resolves battles automatically.
 
-use crate::battle::{Battle, Group, GroupStatus, ALIVE, W_LOST};
+use crate::battle::{Battle, Group, GroupStatus, ALIVE, W_DOCKED, W_LOST};
 use crate::fixed::*;
 use crate::types::*;
 
@@ -63,17 +63,21 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
         consider(45);
     }
     if carriers > 0 {
-        let (mut have, mut max) = (0, 0);
+        // Worth it when two or more waves sit ready in the hangars (sending
+        // them all beats one at a time), or when the wings are worn down.
+        let (mut docked, mut have, mut max) = (0, 0, 0);
         let w = &b.wings;
         for k in 0..w.len() {
             if g.ships.contains(&w.carrier[k]) && w.state[k] != W_LOST {
                 have += w.count[k] as i32;
                 max += WING_SIZE as i32;
+                docked += (w.state[k] == W_DOCKED) as i32;
             }
         }
-        // Worth it whenever a wing is short, or from the second pulse on.
-        if max > 0 && (have * 2 < max || b.pulse() >= 1) {
-            consider(if have * 2 < max { 45 } else { 35 });
+        if max > 0 && have * 2 < max {
+            consider(45);
+        } else if docked >= 2 * WING_WAVE as i32 * carriers || b.pulse() >= 1 {
+            consider(35);
         }
     }
     best

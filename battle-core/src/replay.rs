@@ -131,6 +131,18 @@ pub fn write_frame(o: &mut String, b: &Battle) {
             w.state[k]
         );
     }
+    // Fighters per group: flying, and waiting in the hangar.
+    let mut fighters = vec![[0u32; 2]; b.groups.len()];
+    for k in 0..w.len() {
+        let gi = s.group[w.carrier[k] as usize] as usize;
+        match w.state[k] {
+            crate::battle::W_OUT | crate::battle::W_RETURNING => {
+                fighters[gi][0] += w.count[k] as u32
+            }
+            crate::battle::W_DOCKED => fighters[gi][1] += w.count[k] as u32,
+            _ => {}
+        }
+    }
     o.push_str("],\"g\":[");
     for (gi, g) in b.groups.iter().enumerate() {
         if gi > 0 {
@@ -145,7 +157,7 @@ pub fn write_frame(o: &mut String, b: &Battle) {
         };
         let _ = write!(
             o,
-            "[{},{},{},{},{},{},{},{},{},{}]",
+            "[{},{},{},{},{},{},{},{},{},{},{},{}]",
             g.cx / FP,
             g.cy / FP,
             g.goal_x / FP,
@@ -155,7 +167,9 @@ pub fn write_frame(o: &mut String, b: &Battle) {
             g.target_group.map_or(-1, |t| t as i32),
             g.alive,
             sig,
-            g.sig_armed as u8
+            g.sig_armed as u8,
+            fighters[gi][0],
+            fighters[gi][1]
         );
     }
     o.push_str("]}");
