@@ -474,6 +474,12 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         } else if (kind === EV.FIGHTER_DOWN) {
           const p = wingPos.get(a);
           if (!p) continue;
+          // point defence: thin line from the shooting ship (b < 2^31; otherwise b is a wing)
+          const q = b < 2147483648 ? (pos[b] || shipAt(f0, b)) : null;
+          if (q) {
+            ctx.strokeStyle = COL.warn; ctx.lineWidth = 0.7;
+            ctx.beginPath(); ctx.moveTo(sx(q[0]), sy(q[1])); ctx.lineTo(sx(p[0]), sy(p[1])); ctx.stroke();
+          }
           ctx.fillStyle = COL.warn;
           ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3, 0, Math.PI * 2); ctx.fill();
         }

@@ -286,8 +286,8 @@ impl Report {
                 _ => {}
             }
         }
-        for k in 0..2 {
-            sides[k].damage_taken = b.damage_by_type[k];
+        for (sd, dmg) in sides.iter_mut().zip(b.damage_by_type) {
+            sd.damage_taken = dmg;
         }
         let mut mvp = [None, None];
         for side in 0..2u8 {

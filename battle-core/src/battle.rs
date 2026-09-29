@@ -703,6 +703,24 @@ impl Battle {
         best.map(|b| b.1)
     }
 
+    /// Default target: stay on the current enemy group while it is still
+    /// fighting, unless another one is clearly closer. Without this, slow gun
+    /// lines keep swinging after whichever fast group passes by.
+    fn engage_target(&self, g: &Group) -> Option<u16> {
+        let nearest = self.nearest_enemy_group(g)?;
+        let Some(cur) = g.target_group else {
+            return Some(nearest);
+        };
+        let c = &self.groups[cur as usize];
+        if cur == nearest || c.side == g.side || !c.status.in_battle() || c.alive == 0 {
+            return Some(nearest);
+        }
+        let n = &self.groups[nearest as usize];
+        let d_cur = len((c.cx - g.cx) as i64, (c.cy - g.cy) as i64);
+        let d_new = len((n.cx - g.cx) as i64, (n.cy - g.cy) as i64);
+        Some(if d_new * 3 < d_cur * 2 { nearest } else { cur })
+    }
+
     fn plan_groups(&mut self) {
         // Refresh centroids and derived stats first so every group plans on the same picture.
         for gi in 0..self.groups.len() {
@@ -773,7 +791,7 @@ impl Battle {
                         }
                         _ => None,
                     };
-                    target_group = explicit.or_else(|| self.nearest_enemy_group(&g));
+                    target_group = explicit.or_else(|| self.engage_target(&g));
                     let dr = g.range as i64 * g.doctrine.range_permille() / 1000;
                     if let Some(tid) = target_group {
                         let t = &self.groups[tid as usize];
@@ -1367,7 +1385,7 @@ impl Battle {
         let ws = &mut self.wings;
         let (dx, dy) = ((x - ws.x[w]) as i64, (y - ws.y[w]) as i64);
         let d = len(dx, dy);
-        if d <= reach as i64 {
+        if d <= reach as i64 || d == 0 {
             return true;
         }
         let step = (WING_SPEED as i64).min(d - reach as i64 / 2);
@@ -1448,7 +1466,20 @@ impl Battle {
         }
         let tu = t as usize;
         let (tx, ty) = (self.ships.x[tu], self.ships.y[tu]);
-        if self.fly(w, tx, ty, WING_STRIKE_RANGE) && self.wings.cd[w] == 0 {
+        // Circle the target at strafing distance instead of sitting on top of it.
+        let (dx, dy) = ((self.wings.x[w] - tx) as i64, (self.wings.y[w] - ty) as i64);
+        let near = len(dx, dy) <= WING_STRIKE_RANGE as i64 * 3 / 2;
+        let (ax, ay) = if near {
+            let around = atan2(dy, dx).wrapping_add(WING_ORBIT_STEP);
+            let (ox, oy) = polar(WING_ORBIT_RADIUS as i64, around);
+            (tx + ox as i32, ty + oy as i32)
+        } else {
+            (tx, ty)
+        };
+        self.fly(w, ax, ay, 0);
+        let in_range = len((self.wings.x[w] - tx) as i64, (self.wings.y[w] - ty) as i64)
+            <= WING_STRIKE_RANGE as i64;
+        if in_range && self.wings.cd[w] == 0 {
             self.wings.cd[w] = WING_PASS_TICKS;
             let amount = self.wings.count[w] as i32 * FIGHTER_DAMAGE;
             damages.push(Damage {

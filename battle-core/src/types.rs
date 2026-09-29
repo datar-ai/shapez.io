@@ -162,11 +162,15 @@ pub const WING_SPEED: i32 = ups(400);
 /// Point defense is less accurate against nimble fighters (percent of its missile chance).
 pub const PD_VS_FIGHTER: i32 = 35;
 /// Fighters strafe a ship from this close.
-pub const WING_STRIKE_RANGE: i32 = 250 * FP;
+pub const WING_STRIKE_RANGE: i32 = 450 * FP;
+/// Wings circle their target at this distance...
+pub const WING_ORBIT_RADIUS: i32 = 350 * FP;
+/// ...moving this far around it each tick (about 8 degrees).
+pub const WING_ORBIT_STEP: u16 = 1500;
 /// Wings dogfight other wings from this close.
 pub const WING_DOGFIGHT_RANGE: i32 = 300 * FP;
 /// Damage per fighter per strafing pass, and ticks between passes.
-pub const FIGHTER_DAMAGE: i32 = 34;
+pub const FIGHTER_DAMAGE: i32 = 45;
 pub const WING_PASS_TICKS: u16 = 20;
 /// Chance (permille) per fighter per dogfight round to down an enemy fighter.
 pub const DOGFIGHT_CHANCE: i32 = 90;
