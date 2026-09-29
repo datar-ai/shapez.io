@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>戰鬥核心重播</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: tactical plot fills the left, a narrow order-of-battle column on the right, transport bar under the plot. */
+:root {
+  --bg: #0b1016;
+  --panel: #111922;
+  --line: #1f2b38;
+  --grid: #16202b;
+  --fg: #d7e1ea;
+  --muted: #7d8c9b;
+  --blue: #5aa9ff;
+  --red: #ff6b5e;
+  --beam: #8fe3ff;
+  --kinetic: #ffd479;
+  --missile: #ff9ff0;
+  --good: #6fd08c;
+  --warn: #f2c14e;
+  --bad: #ff6b5e;
+  --font-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 13px/1.45 var(--font-body);
+}
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 15px; font-weight: 700; margin: 0; letter-spacing: .02em; }
+.clock { font-family: var(--font-data); font-variant-numeric: tabular-nums; display: flex; gap: 16px; color: var(--muted); }
+.clock b { color: var(--fg); font-weight: 600; }
+.load { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); }
+.stage { position: relative; min-height: 0; }
+canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+canvas:active { cursor: grabbing; }
+.legend { position: absolute; left: 12px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 12px; pointer-events: none; }
+.legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; }
+.pulse-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--warn); color: var(--warn); padding: 6px 14px; border-radius: 4px; font-weight: 500; }
+aside { grid-row: 2 / 4; grid-column: 2; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+aside section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+aside h2 { font-size: 11px; font-weight: 500; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; }
+.groups { display: grid; gap: 7px; }
+.grp { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; cursor: pointer; padding: 3px 4px; border-radius: 3px; }
+.grp:hover, .grp.sel { background: var(--line); }
+.grp .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grp .st { font-size: 11px; color: var(--muted); font-family: var(--font-data); text-align: right; }
+.bar { grid-column: 1 / -1; height: 4px; background: var(--grid); border-radius: 2px; overflow: hidden; }
+.bar > div { height: 100%; }
+.log { flex: 1; overflow-y: auto; padding: 8px 14px 14px; font-size: 12px; }
+.log div { padding: 2px 0; color: var(--muted); cursor: pointer; display: grid; grid-template-columns: 46px 1fr; gap: 6px; }
+.log div.past { color: var(--fg); }
+.log div .t { font-family: var(--font-data); font-variant-numeric: tabular-nums; color: var(--muted); }
+.log div.hd { color: var(--warn); margin-top: 6px; }
+.transport { grid-column: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px; border-top: 1px solid var(--line); }
+button, select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+button:hover, select:hover { border-color: var(--muted); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.timeline { position: relative; flex: 1 1 260px; height: 28px; min-width: 0; }
+.timeline canvas { cursor: pointer; }
+label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+.report { font-size: 12px; }
+.report table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.report td { padding: 2px 0; }
+.report td:not(:first-child) { text-align: right; font-family: var(--font-data); }
+.empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 16px; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto auto; height: auto; }
+  aside { grid-row: auto; grid-column: 1; border-left: 0; border-top: 1px solid var(--line); }
+  .log { max-height: 280px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>戰鬥核心重播</h1>
+    <div class="clock">
+      <span>時間 <b id="t-sec">0.0</b> 秒</span>
+      <span>脈衝 <b id="t-pulse">0</b></span>
+      <span>藍 <b id="n-blue">0</b> 艘</span>
+      <span>紅 <b id="n-red">0</b> 艘</span>
+    </div>
+    <div class="load">
+      <label for="file">載入重播檔</label>
+      <input id="file" type="file" accept=".json,application/json">
+    </div>
+  </header>
+  <div class="stage" id="stage">
+    <canvas id="plot"></canvas>
+    <div class="pulse-banner" id="banner" hidden>脈衝暫停：按空白鍵繼續</div>
+    <div class="legend">
+      <span><i style="background:var(--beam)"></i>光束命中</span>
+      <span><i style="background:var(--kinetic)"></i>動能命中</span>
+      <span><i style="background:var(--missile)"></i>飛彈</span>
+      <span>箭頭：戰鬥群目標點</span>
+      <span>滾輪縮放，拖曳平移</span>
+    </div>
+    <div class="empty" id="empty">用 <code>battle --replay out.json</code> 產生重播檔，再從右上角載入。</div>
+  </div>
+  <aside>
+    <section>
+      <h2>戰鬥群（士氣）</h2>
+      <div class="groups" id="groups"></div>
+    </section>
+    <section class="report" id="report" hidden></section>
+    <div class="log" id="log"></div>
+  </aside>
+  <div class="transport">
+    <button id="play" type="button">播放</button>
+    <button id="back" type="button" title="上一幀">◀</button>
+    <button id="fwd" type="button" title="下一幀">▶</button>
+    <select id="speed" aria-label="速度">
+      <option value="1">1×</option>
+      <option value="2" selected>2×</option>
+      <option value="4">4×</option>
+      <option value="8">8×</option>
+    </select>
+    <label class="chk"><input id="pausePulse" type="checkbox" checked>每個脈衝暫停</label>
+    <div class="timeline"><canvas id="tl"></canvas></div>
+  </div>
+</div>
+<script id="replay-data" type="application/json"></script>
+<script>
+(() => {
+  const CLASS = [
+    { name: "戰艦", len: 70, wid: 30 },
+    { name: "巡洋艦", len: 50, wid: 20 },
+    { name: "驅逐艦", len: 34, wid: 14 },
+    { name: "旗艦", len: 95, wid: 42 },
+  ];
+  const VERB = ["", "攻擊", "側擊", "固守", "推進", "集火部位", "換準則", "投入預備隊", "跳躍撤離"];
+  const STATUS = ["交戰", "預備", "撤離中", "潰散", "已撤離", "全滅"];
+  const DOCTRINE = ["砲列", "鐵砧", "鐵鎚"];
+  const EV = { FIRE: 1, INTERCEPT: 3, KILLED: 5, PART: 6, OVERLOAD: 7, ROUTED: 8, ESCAPED: 9, RETREAT: 10, COMMAND: 11, PULSE: 12, FLAGSHIP: 13, OVER: 14 };
+
+  const css = getComputedStyle(document.documentElement);
+  const C = (n) => css.getPropertyValue("--" + n).trim();
+  const COL = { side: [C("blue"), C("red")], dmg: [C("beam"), C("kinetic"), C("missile")], grid: C("grid"), line: C("line"), fg: C("fg"), muted: C("muted"), warn: C("warn"), good: C("good"), bad: C("bad") };
+
+  const $ = (id) => document.getElementById(id);
+  const plot = $("plot"), ctx = plot.getContext("2d");
+  const tl = $("tl"), tctx = tl.getContext("2d");
+
+  let R = null;            // replay
+  let fi = 0;              // frame position (float)
+  let playing = false, lastT = 0;
+  let view = { cx: 0, cy: 0, scale: 0.1 };
+  let selGroup = -1;
+  let fireByTick = new Map(), killByTick = new Map();
+  let pausedAtPulse = -1;
+
+  function load(data) {
+    R = data;
+    fi = 0; playing = false; pausedAtPulse = 0;
+    fireByTick = new Map(); killByTick = new Map();
+    for (const e of R.events) {
+      const [t, k] = e;
+      if (k === EV.FIRE || k === EV.INTERCEPT) push(fireByTick, t, e);
+      if (k === EV.KILLED) push(killByTick, t, e);
+    }
+    fitView();
+    buildGroups();
+    buildLog();
+    buildReport();
+    $("empty").hidden = true;
+    render();
+  }
+  function push(m, k, v) { let a = m.get(k); if (!a) m.set(k, a = []); a.push(v); }
+
+  function fitView() {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const f of [R.frames[0], R.frames[Math.floor(R.frames.length / 2)]]) {
+      for (const s of f.s) if (s) { x0 = Math.min(x0, s[0]); x1 = Math.max(x1, s[0]); y0 = Math.min(y0, s[1]); y1 = Math.max(y1, s[1]); }
+    }
+    const r = plot.getBoundingClientRect();
+    view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2;
+    view.scale = Math.min(r.width / ((x1 - x0) * 1.25 + 1), r.height / ((y1 - y0) * 1.35 + 1));
+  }
+
+  // --- side panel -------------------------------------------------------
+  function buildGroups() {
+    const el = $("groups");
+    el.innerHTML = "";
+    R.groups.forEach((g, i) => {
+      const d = document.createElement("div");
+      d.className = "grp";
+      d.innerHTML = `<span class="nm" style="color:${COL.side[g.side]}">${esc(g.name)} <span style="color:var(--muted)">${DOCTRINE[g.doctrine] || ""}</span></span><span class="st" id="gs${i}"></span><div class="bar"><div id="gb${i}"></div></div>`;
+      d.onclick = () => { selGroup = selGroup === i ? -1 : i; [...el.children].forEach((c, j) => c.classList.toggle("sel", j === selGroup)); render(); };
+      el.appendChild(d);
+    });
+  }
+  function updateGroups(frame) {
+    frame.g.forEach((g, i) => {
+      const [, , , , coh, st, , alive] = g;
+      $("gs" + i).textContent = `${STATUS[st]} · ${alive} 艘 · ${coh}`;
+      const b = $("gb" + i);
+      b.style.width = (coh / 10) + "%";
+      b.style.background = coh > 600 ? COL.good : coh > 250 ? COL.warn : COL.bad;
+    });
+  }
+  function buildLog() {
+    const el = $("log");
+    el.innerHTML = "";
+    const rows = [];
+    for (const [t, k, a, b, c] of R.events) {
+      let text = null, cls = "";
+      if (k === EV.PULSE) { text = `脈衝 ${c} 開始`; cls = "hd"; }
+      else if (k === EV.COMMAND) text = `<span style="color:${COL.side[b]}">${esc(R.groups[a].name)}</span> ${VERB[c]}`;
+      else if (k === EV.ROUTED) text = `<span style="color:${COL.side[R.groups[a].side]}">${esc(R.groups[a].name)}</span> 潰散`;
+      else if (k === EV.ESCAPED) text = `<span style="color:${COL.side[R.groups[a].side]}">${esc(R.groups[a].name)}</span> 撤離成功（${c} 艘）`;
+      else if (k === EV.RETREAT) text = `<span style="color:${COL.side[R.groups[a].side]}">${esc(R.groups[a].name)}</span> 開始撤離，本脈衝無法開火`;
+      else if (k === EV.FLAGSHIP) text = `<span style="color:${COL.side[b]}">${b ? "紅" : "藍"}方旗艦</span> 被擊沉`;
+      else if (k === EV.OVER) { text = c < 0 ? "平手" : `<span style="color:${COL.side[c]}">${c ? "紅" : "藍"}方勝</span>`; cls = "hd"; }
+      if (text) rows.push({ t, text, cls });
+    }
+    for (const r of rows) {
+      const d = document.createElement("div");
+      d.className = r.cls;
+      d.dataset.t = r.t;
+      d.innerHTML = `<span class="t">${(r.t / R.tickHz).toFixed(1)}s</span><span>${r.text}</span>`;
+      d.onclick = () => { seekTick(r.t); };
+      el.appendChild(d);
+    }
+  }
+  function updateLog(tick) {
+    for (const d of $("log").children) d.classList.toggle("past", +d.dataset.t <= tick);
+  }
+  function buildReport() {
+    const r = R.report, el = $("report");
+    if (!r) { el.hidden = true; return; }
+    const side = (k) => r.sides[k];
+    const row = (label, f) => `<tr><td>${label}</td><td style="color:${COL.side[0]}">${f(side(0))}</td><td style="color:${COL.side[1]}">${f(side(1))}</td></tr>`;
+    const w = r.winner < 0 ? "平手" : `<span style="color:${COL.side[r.winner]}">${r.winner ? "紅" : "藍"}方勝</span>`;
+    el.innerHTML = `<h2>戰報</h2><div style="margin-bottom:6px">${w}，${r.pulses} 個脈衝，${r.seconds} 秒</div><table>
+      <tr><td></td><td style="color:var(--muted)">藍</td><td style="color:var(--muted)">紅</td></tr>
+      ${row("損失艦船", s => `${s.lost}/${s.ships}`)}
+      ${row("損失價值 %", s => s.valueLost)}
+      ${row("受光束傷害", s => s.damageTaken[0])}
+      ${row("受動能傷害", s => s.damageTaken[1])}
+      ${row("受飛彈傷害", s => s.damageTaken[2])}</table>`;
+    el.hidden = false;
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // --- drawing ---------------------------------------------------------
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    for (const c of [plot, tl]) {
+      const r = c.getBoundingClientRect();
+      c.width = Math.max(1, r.width * dpr); c.height = Math.max(1, r.height * dpr);
+      c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    render();
+  }
+  const W = () => plot.getBoundingClientRect();
+  function sx(x) { return (x - view.cx) * view.scale + W().width / 2; }
+  function sy(y) { return -(y - view.cy) * view.scale + W().height / 2; }
+
+  function lerpAngle(a, b, t) { let d = ((b - a + 384) % 256) - 128; return a + d * t; }
+
+  function render() {
+    const r = W();
+    ctx.fillStyle = C("bg");
+    ctx.fillRect(0, 0, r.width, r.height);
+    if (!R) return;
+    drawGrid(r);
+    const i0 = Math.floor(fi), i1 = Math.min(i0 + 1, R.frames.length - 1), t = fi - i0;
+    const f0 = R.frames[i0], f1 = R.frames[i1];
+    const tick = f0.t + (f1.t - f0.t) * t;
+    const pos = new Array(R.ships.length);
+
+    // groups: intent arrows
+    f0.g.forEach((g, gi) => {
+      const [cx, cy, gx, gy, , st, , alive] = g;
+      if (!alive || st >= 3) return;
+      const col = COL.side[R.groups[gi].side];
+      ctx.strokeStyle = col; ctx.globalAlpha = gi === selGroup ? 0.9 : 0.35; ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath(); ctx.moveTo(sx(cx), sy(cy)); ctx.lineTo(sx(gx), sy(gy)); ctx.stroke();
+      ctx.setLineDash([]);
+      const ang = Math.atan2(sy(gy) - sy(cy), sx(gx) - sx(cx));
+      ctx.beginPath();
+      ctx.moveTo(sx(gx), sy(gy));
+      ctx.lineTo(sx(gx) - 9 * Math.cos(ang - 0.4), sy(gy) - 9 * Math.sin(ang - 0.4));
+      ctx.moveTo(sx(gx), sy(gy));
+      ctx.lineTo(sx(gx) - 9 * Math.cos(ang + 0.4), sy(gy) - 9 * Math.sin(ang + 0.4));
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    });
+
+    // ships
+    const k = Math.max(0.3, Math.min(1.2, view.scale * 5));
+    for (let i = 0; i < R.ships.length; i++) {
+      const a = f0.s[i];
+      if (!a) continue;
+      const b = f1.s[i] || a;
+      const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+      pos[i] = [x, y];
+      const h = lerpAngle(a[2], b[2], t) / 256 * Math.PI * 2;
+      const [cls, side, grp] = R.ships[i];
+      const spec = CLASS[cls];
+      const X = sx(x), Y = sy(y);
+      ctx.save();
+      ctx.translate(X, Y); ctx.rotate(-h);
+      const L = spec.len * k * 0.5, Wd = spec.wid * k * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(L, 0); ctx.lineTo(-L * 0.7, Wd); ctx.lineTo(-L * 0.45, 0); ctx.lineTo(-L * 0.7, -Wd); ctx.closePath();
+      const hp = a[3] / 100;
+      ctx.fillStyle = COL.side[side];
+      ctx.globalAlpha = 0.35 + 0.65 * hp;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      if (grp === selGroup) { ctx.strokeStyle = COL.fg; ctx.lineWidth = 1; ctx.stroke(); }
+      ctx.restore();
+      if (a[6] & 16) { // shield overload
+        ctx.strokeStyle = COL.warn; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(X, Y, L * 1.2 + 2, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (cls === 3) {
+        ctx.strokeStyle = COL.side[side]; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(X, Y, L * 1.25 + 3, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    // weapon fire in the last few ticks
+    const T = Math.round(tick);
+    for (let dt = 0; dt < 6; dt++) {
+      const list = fireByTick.get(T - dt);
+      if (!list) continue;
+      ctx.globalAlpha = 1 - dt / 6;
+      for (const [, kind, a, b, , d] of list) {
+        if (kind === EV.FIRE) {
+          const p = pos[a] || shipAt(f0, a), q = pos[b] || shipAt(f0, b);
+          if (!p || !q) continue;
+          ctx.strokeStyle = COL.dmg[d]; ctx.lineWidth = d === 0 ? 1.6 : 1;
+          ctx.beginPath(); ctx.moveTo(sx(p[0]), sy(p[1])); ctx.lineTo(sx(q[0]), sy(q[1])); ctx.stroke();
+        } else {
+          const p = pos[a];
+          if (!p) continue;
+          ctx.fillStyle = COL.dmg[2];
+          ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // kills: expanding ring
+    for (let dt = 0; dt < 20; dt++) {
+      const list = killByTick.get(T - dt);
+      if (!list) continue;
+      for (const [, , a] of list) {
+        const p = shipAt(R.frames[Math.max(0, i0 - 1)], a) || shipAt(f0, a);
+        if (!p) continue;
+        ctx.strokeStyle = COL.warn; ctx.globalAlpha = 1 - dt / 20; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 4 + dt * 1.6, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // missiles
+    const m0 = f0.m;
+    for (const [x, y, side] of m0) {
+      ctx.fillStyle = COL.dmg[2];
+      ctx.fillRect(sx(x) - 1.5, sy(y) - 1.5, 3, 3);
+      ctx.fillStyle = COL.side[side];
+      ctx.fillRect(sx(x) - 0.5, sy(y) - 0.5, 1, 1);
+    }
+
+    // group labels
+    ctx.font = `12px ${C("font-body")}`;
+    ctx.textAlign = "center";
+    f0.g.forEach((g, gi) => {
+      const [cx, cy, , , coh, st, , alive] = g;
+      if (!alive || st === 4 || st === 5) return;
+      const name = R.groups[gi].name.split("・").pop();
+      ctx.fillStyle = st === 3 ? COL.muted : COL.side[R.groups[gi].side];
+      ctx.fillText(name + (st === 3 ? "（潰散）" : st === 2 ? "（撤離中）" : ""), sx(cx), sy(cy) - 28);
+      ctx.fillStyle = COL.grid; ctx.fillRect(sx(cx) - 20, sy(cy) - 23, 40, 3);
+      ctx.fillStyle = coh > 600 ? COL.good : coh > 250 ? COL.warn : COL.bad;
+      ctx.fillRect(sx(cx) - 20, sy(cy) - 23, 40 * coh / 1000, 3);
+    });
+
+    // hud
+    let nb = 0, nr = 0;
+    for (let i = 0; i < R.ships.length; i++) if (f0.s[i]) (R.ships[i][1] ? nr++ : nb++);
+    $("t-sec").textContent = (tick / R.tickHz).toFixed(1);
+    $("t-pulse").textContent = Math.floor(tick / R.pulseTicks);
+    $("n-blue").textContent = nb; $("n-red").textContent = nr;
+    updateGroups(f0);
+    updateLog(tick);
+    drawTimeline(tick);
+  }
+  function shipAt(f, i) { const s = f && f.s[i]; return s ? [s[0], s[1]] : null; }
+
+  function drawGrid(r) {
+    const step = 1000; // distance units, one simulation grid cell
+    ctx.strokeStyle = COL.grid; ctx.lineWidth = 1;
+    const x0 = Math.floor((view.cx - r.width / 2 / view.scale) / step) * step;
+    const x1 = view.cx + r.width / 2 / view.scale;
+    const y0 = Math.floor((view.cy - r.height / 2 / view.scale) / step) * step;
+    const y1 = view.cy + r.height / 2 / view.scale;
+    ctx.beginPath();
+    for (let x = x0; x <= x1; x += step) { ctx.moveTo(sx(x), 0); ctx.lineTo(sx(x), r.height); }
+    for (let y = y0; y <= y1; y += step) { ctx.moveTo(0, sy(y)); ctx.lineTo(r.width, sy(y)); }
+    ctx.stroke();
+    ctx.fillStyle = COL.muted; ctx.font = `11px ${C("font-data")}`; ctx.textAlign = "left";
+    ctx.fillText("格線 1000 距離單位", 12, 18);
+  }
+
+  function drawTimeline(tick) {
+    const r = tl.getBoundingClientRect();
+    tctx.clearRect(0, 0, r.width, r.height);
+    const end = R.frames[R.frames.length - 1].t || 1;
+    const X = (t) => t / end * (r.width - 2) + 1;
+    tctx.fillStyle = COL.line; tctx.fillRect(0, r.height / 2 - 2, r.width, 4);
+    tctx.fillStyle = COL.muted;
+    for (let p = 0; p * R.pulseTicks <= end; p++) tctx.fillRect(X(p * R.pulseTicks), 4, 1, r.height - 8);
+    for (const [t, k, a] of R.events) {
+      if (k === EV.ROUTED || k === EV.FLAGSHIP) {
+        const side = k === EV.ROUTED ? R.groups[a].side : null;
+        tctx.fillStyle = side === null ? COL.warn : COL.side[side];
+        tctx.fillRect(X(t) - 1.5, 2, 3, 7);
+      }
+    }
+    tctx.fillStyle = COL.fg;
+    tctx.fillRect(0, r.height / 2 - 2, X(tick), 4);
+    tctx.beginPath(); tctx.arc(X(tick), r.height / 2, 6, 0, Math.PI * 2); tctx.fill();
+  }
+
+  // --- playback --------------------------------------------------------
+  function frameTicks() { return R.frames.length > 1 ? R.frames[1].t - R.frames[0].t : 1; }
+  function seekTick(t) {
+    let lo = 0, hi = R.frames.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (R.frames[m].t <= t) lo = m; else hi = m - 1; }
+    fi = lo; pausedAtPulse = Math.floor(R.frames[lo].t / R.pulseTicks);
+    $("banner").hidden = true;
+    render();
+  }
+  function setPlaying(p) {
+    playing = p && !!R;
+    $("play").textContent = playing ? "暫停" : "播放";
+    if (playing) { $("banner").hidden = true; lastT = performance.now(); requestAnimationFrame(tickLoop); }
+  }
+  function tickLoop(now) {
+    if (!playing) return;
+    const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+    const speed = +$("speed").value;
+    const before = R.frames[Math.floor(fi)].t;
+    fi = Math.min(R.frames.length - 1, fi + dt * R.tickHz * speed / frameTicks());
+    const after = R.frames[Math.floor(fi)].t;
+    const pulse = Math.floor(after / R.pulseTicks);
+    if ($("pausePulse").checked && pulse > pausedAtPulse && Math.floor(before / R.pulseTicks) < pulse) {
+      pausedAtPulse = pulse;
+      fi = Math.floor(fi);
+      render();
+      setPlaying(false);
+      $("banner").hidden = false;
+      return;
+    }
+    render();
+    if (fi >= R.frames.length - 1) { setPlaying(false); return; }
+    requestAnimationFrame(tickLoop);
+  }
+
+  $("play").onclick = () => setPlaying(!playing);
+  $("back").onclick = () => { if (R) { setPlaying(false); fi = Math.max(0, Math.floor(fi) - 1); render(); } };
+  $("fwd").onclick = () => { if (R) { setPlaying(false); fi = Math.min(R.frames.length - 1, Math.floor(fi) + 1); render(); } };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" && e.target.type === "file") return;
+    if (e.code === "Space") { e.preventDefault(); setPlaying(!playing); }
+    if (e.code === "ArrowRight") $("fwd").click();
+    if (e.code === "ArrowLeft") $("back").click();
+  });
+  function scrub(e) {
+    if (!R) return;
+    const r = tl.getBoundingClientRect();
+    const end = R.frames[R.frames.length - 1].t;
+    seekTick(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * end);
+  }
+  tl.addEventListener("pointerdown", (e) => { tl.setPointerCapture(e.pointerId); setPlaying(false); scrub(e); });
+  tl.addEventListener("pointermove", (e) => { if (e.buttons) scrub(e); });
+
+  let drag = null;
+  plot.addEventListener("pointerdown", (e) => { plot.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; });
+  plot.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    view.cx = drag.cx - (e.clientX - drag.x) / view.scale;
+    view.cy = drag.cy + (e.clientY - drag.y) / view.scale;
+    render();
+  });
+  plot.addEventListener("pointerup", () => { drag = null; });
+  plot.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = W();
+    const mx = (e.clientX - r.left - r.width / 2) / view.scale + view.cx;
+    const my = -(e.clientY - r.top - r.height / 2) / view.scale + view.cy;
+    view.scale *= Math.exp(-e.deltaY * 0.0015);
+    view.cx = mx - (e.clientX - r.left - r.width / 2) / view.scale;
+    view.cy = my + (e.clientY - r.top - r.height / 2) / view.scale;
+    render();
+  }, { passive: false });
+
+  $("file").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try { load(JSON.parse(await f.text())); }
+    catch (err) { $("empty").hidden = false; $("empty").textContent = "無法讀取這個檔案：" + err.message + "。請選擇 battle --replay 產生的 JSON 檔。"; }
+  });
+
+  window.addEventListener("resize", resize);
+  resize();
+  const embedded = $("replay-data").textContent.trim();
+  if (embedded) load(JSON.parse(embedded));
+})();
+</script>
+</body>
+</html>
