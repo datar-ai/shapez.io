@@ -243,10 +243,11 @@ pub struct SideState {
     pub command_points: i32,
     /// When true, the built-in commander spends this side's points each pulse.
     pub ai: bool,
-    /// When true, this side reads the terrain: its groups close in on enemies
-    /// hiding in a nebula, and its commander sends hammers round the flank
-    /// that is hidden by a nebula rather than slowed by asteroids. Off only
-    /// for measuring what reading the terrain is worth.
+    /// When true, this side reads the terrain: its gun lines and anvils fight
+    /// the enemies they can see before ones hidden in a nebula, its fast
+    /// groups close in to flush hidden ones out, and its commander plays
+    /// candidate moves forward to pick where to fight (see `ai::plan`). Off
+    /// only for measuring what reading the terrain is worth.
     pub terrain_sense: bool,
 }
 
@@ -301,6 +302,7 @@ struct ChunkOut {
     events: Vec<Event>,
 }
 
+#[derive(Clone)]
 pub struct Battle {
     pub tick: u32,
     pub seed: u64,
@@ -320,6 +322,9 @@ pub struct Battle {
     /// Fleet value lost per side; past half, the whole fleet wavers.
     pub value_lost: [i32; 2],
     started: bool,
+    /// True for the copies the commander runs ahead to compare plans; they
+    /// do not plan ahead themselves.
+    pub(crate) lookahead: bool,
     grid: Grid,
     missile_grid: Grid,
     wing_grid: Grid,
@@ -346,6 +351,7 @@ impl Battle {
             damage_by_type: [[0; 3]; 2],
             value_lost: [0; 2],
             started: false,
+            lookahead: false,
             grid: Grid::default(),
             missile_grid: Grid::default(),
             wing_grid: Grid::default(),
@@ -592,11 +598,17 @@ impl Battle {
         }
         self.events
             .push(Event::new(self.tick, ev::PULSE, 0, 0, self.pulse() as i32));
-        for s in 0..2u8 {
+        // Both commanders plan from the same picture, then their orders land.
+        let plans = [0u8, 1].map(|s| {
             if self.sides[s as usize].ai {
-                for cmd in crate::ai::plan(self, s) {
-                    let _ = self.issue(s, cmd);
-                }
+                crate::ai::plan(self, s)
+            } else {
+                Vec::new()
+            }
+        });
+        for (s, plan) in plans.into_iter().enumerate() {
+            for cmd in plan {
+                let _ = self.issue(s as u8, cmd);
             }
         }
     }
@@ -717,7 +729,23 @@ impl Battle {
     /// fighting, unless another one is clearly closer. Without this, slow gun
     /// lines keep swinging after whichever fast group passes by.
     fn engage_target(&self, g: &Group) -> Option<u16> {
-        let nearest = self.nearest_enemy_group(g)?;
+        // Reading the terrain: an enemy hidden in a nebula counts as three
+        // times as far, so gun lines fight what they can see first.
+        let sense = self.sides[g.side as usize].terrain_sense;
+        let mut nearest: Option<(i64, u16)> = None;
+        for o in &self.groups {
+            if o.side == g.side || !o.status.in_battle() || o.alive == 0 {
+                continue;
+            }
+            let mut d = len((o.cx - g.cx) as i64, (o.cy - g.cy) as i64);
+            if sense && g.doctrine != Doctrine::Hammer && self.cover_at(o.cx, o.cy).1 >= 3 {
+                d *= 3;
+            }
+            if nearest.is_none_or(|(bd, _)| d < bd) {
+                nearest = Some((d, o.id));
+            }
+        }
+        let nearest = nearest?.1;
         let Some(cur) = g.target_group else {
             return Some(nearest);
         };
@@ -823,14 +851,16 @@ impl Battle {
                         let t = &self.groups[tid as usize];
                         let to_us = atan2((g.cy - t.cy) as i64, (g.cx - t.cx) as i64);
                         // An enemy hiding in a nebula can only be seen from close by.
-                        if sense && self.cover_at(t.cx, t.cy).1 >= 3 {
+                        if sense && g.doctrine != Doctrine::Line && self.cover_at(t.cx, t.cy).1 >= 3
+                        {
                             dr = dr.min(terrain::NEBULA_SIGHT as i64 * 9 / 10);
                         }
                         match order {
                             Order::Engage | Order::Attack { .. } => {
                                 let (ox, oy) = polar(dr, to_us);
-                                goal_x = t.cx + ox as i32;
-                                goal_y = t.cy + oy as i32;
+                                let spot = (t.cx + ox as i32, t.cy + oy as i32);
+                                goal_x = spot.0;
+                                goal_y = spot.1;
                                 want = to_us.wrapping_add(ANG_HALF);
                             }
                             Order::Flank { left, .. } => {
@@ -983,8 +1013,12 @@ impl Battle {
         }
         let (x, y) = (s.x[i] as i64, s.y[i] as i64);
         // Ships inside a nebula can only be seen from close by.
+        // A target must be seen (ships inside a nebula only from close by) and
+        // not behind an asteroid field.
         let visible = |j: usize, d: i64| {
-            d <= terrain::NEBULA_SIGHT as i64 || self.terrain.at(s.x[j], s.y[j]) != terrain::NEBULA
+            (d <= terrain::NEBULA_SIGHT as i64
+                || self.terrain.at(s.x[j], s.y[j]) != terrain::NEBULA)
+                && self.terrain.clear_line((s.x[i], s.y[i]), (s.x[j], s.y[j]))
         };
 
         // Steering: chase the formation slot around the group anchor.
@@ -1457,7 +1491,12 @@ impl Battle {
         let tw = self.wings.target_wing[w];
         let tw_ok = tw != NONE && self.wings.flying(tw as usize);
         let t = self.wings.target[w];
-        let t_ok = t != NONE && self.ships.state[t as usize] == ALIVE;
+        let t_ok = t != NONE
+            && self.ships.state[t as usize] == ALIVE
+            && self
+                .terrain
+                .at(self.ships.x[t as usize], self.ships.y[t as usize])
+                != terrain::NEBULA;
         if (self.tick + w as u32).is_multiple_of(10) || !(tw_ok || t_ok) {
             // Enemy fighters near our carrier or near us come first.
             let mut best = (i64::MAX, NONE);
@@ -1554,9 +1593,8 @@ impl Battle {
         let s = &self.ships;
         let (wx, wy) = (self.wings.x[w] as i64, self.wings.y[w] as i64);
         let side = self.wings.side[w];
-        let visible = |j: usize, d: i64| {
-            d <= terrain::NEBULA_SIGHT as i64 || self.terrain.at(s.x[j], s.y[j]) != terrain::NEBULA
-        };
+        // Fighters cannot find ships inside a nebula at all.
+        let visible = |j: usize, _d: i64| self.terrain.at(s.x[j], s.y[j]) != terrain::NEBULA;
         let mut best = (i64::MAX, NONE);
         // Strike the most valuable group within reach that has the thinnest
         // point-defense screen.
@@ -1898,6 +1936,25 @@ impl Battle {
     }
 
     /// Total starting value of a side's fleet.
+    /// What a side still has on the field: each ship's cost scaled by its
+    /// remaining hull. Ships that jumped out count in full.
+    pub fn side_strength(&self, side: u8) -> i64 {
+        let s = &self.ships;
+        let mut total = 0i64;
+        for i in 0..s.len() {
+            if s.side[i] != side || s.state[i] == DEAD {
+                continue;
+            }
+            let st = s.stats(i);
+            total += if s.state[i] == ALIVE {
+                st.cost as i64 * s.hull[i] as i64 / st.hull.max(1) as i64
+            } else {
+                st.cost as i64
+            };
+        }
+        total
+    }
+
     pub fn side_value(&self, side: u8) -> i32 {
         self.groups
             .iter()

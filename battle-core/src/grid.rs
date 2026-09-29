@@ -8,7 +8,7 @@ pub const CELL: i32 = 1000 * FP;
 const HALF_CELLS: i32 = 24; // covers +-24,000 units; anything outside is clamped
 pub const DIM: i32 = HALF_CELLS * 2;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Grid {
     start: Vec<u32>, // DIM*DIM + 1 prefix sums
     items: Vec<u32>,

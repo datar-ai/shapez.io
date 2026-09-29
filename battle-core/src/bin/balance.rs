@@ -1,6 +1,6 @@
 //! Auto-resolve many seeds of the demo battle and report the balance.
 //!
-//!   balance [--seeds 100] [--scale 1] [--no-terrain blue|red]
+//!   balance [--seeds 100] [--first 1] [--scale 1] [--no-terrain blue|red|both]
 //!
 //! `--no-terrain` makes one side ignore the terrain, to measure what reading it is worth.
 
@@ -28,13 +28,20 @@ fn main() {
     let mut dealt = [0i64; 5];
     let mut sig_used = [0u32; 4];
     let mut group_dealt = Vec::new();
-    for seed in 1..=seeds {
+    let first: u64 = arg(&args, "--first")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    for seed in first..first + seeds {
         let mut b = scenario::demo(seed, scale);
         b.sides[0].ai = true;
         b.sides[1].ai = true;
         match arg(&args, "--no-terrain").as_deref() {
             Some("blue") => b.sides[0].terrain_sense = false,
             Some("red") => b.sides[1].terrain_sense = false,
+            Some("both") => {
+                b.sides[0].terrain_sense = false;
+                b.sides[1].terrain_sense = false;
+            }
             _ => {}
         }
         while b.outcome.is_none() {

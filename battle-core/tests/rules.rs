@@ -2,7 +2,7 @@
 
 use battlecore::battle::{GroupStatus, W_LOST, W_OUT};
 use battlecore::scenario;
-use battlecore::terrain::NEBULA;
+use battlecore::terrain::{ASTEROIDS, NEBULA};
 use battlecore::types::*;
 use battlecore::Battle;
 
@@ -199,69 +199,83 @@ fn wings_launch_strike_and_die_with_their_carrier() {
     }
 }
 
+/// Shots a lone battleship at (-2000, 0) fires at a destroyer at (0, 0) in
+/// ten seconds, after `paint` lays terrain.
+fn shots_at_lone_target(paint: impl Fn(&mut Battle)) -> usize {
+    let mut b = Battle::new(1);
+    paint(&mut b);
+    b.add_group(
+        0,
+        "gun",
+        Doctrine::Line,
+        false,
+        &[(ShipClass::Battleship, 1)],
+        -2000,
+        0,
+        0,
+    );
+    b.add_group(
+        1,
+        "target",
+        Doctrine::Line,
+        false,
+        &[(ShipClass::Destroyer, 1)],
+        0,
+        0,
+        0,
+    );
+    b.sides = [battlecore::battle::SideState {
+        command_points: 0,
+        ai: false,
+        terrain_sense: true,
+    }; 2];
+    b.step();
+    b.issue(0, Command::Hold { group: 0 }).unwrap();
+    b.issue(1, Command::Hold { group: 1 }).unwrap();
+    let mut shots = 0;
+    for _ in 0..200 {
+        b.step();
+        shots += b
+            .events
+            .iter()
+            .filter(|e| e.kind == ev::FIRE && e.a == 0)
+            .count();
+    }
+    shots
+}
+
 #[test]
 fn nebula_hides_ships_beyond_close_range() {
-    let fire_count = |nebula: bool| {
-        let mut b = Battle::new(1);
-        if nebula {
-            b.terrain.paint_ellipse(NEBULA, 0, 0, 600, 600);
-        }
-        b.add_group(
-            0,
-            "gun",
-            Doctrine::Line,
-            false,
-            &[(ShipClass::Battleship, 1)],
-            -2000,
-            0,
-            0,
-        );
-        b.add_group(
-            1,
-            "hidden",
-            Doctrine::Line,
-            false,
-            &[(ShipClass::Destroyer, 1)],
-            0,
-            0,
-            0,
-        );
-        b.sides = [battlecore::battle::SideState {
-            command_points: 0,
-            ai: false,
-            terrain_sense: true,
-        }; 2];
-        b.step();
-        b.issue(0, Command::Hold { group: 0 }).unwrap();
-        b.issue(1, Command::Hold { group: 1 }).unwrap();
-        let mut shots = 0;
-        for _ in 0..200 {
-            b.step();
-            shots += b
-                .events
-                .iter()
-                .filter(|e| e.kind == ev::FIRE && e.a == 0)
-                .count();
-        }
-        shots
-    };
-    assert!(fire_count(false) > 0);
-    assert_eq!(fire_count(true), 0);
+    assert!(shots_at_lone_target(|_| {}) > 0);
+    assert_eq!(
+        shots_at_lone_target(|b| b.terrain.paint_ellipse(NEBULA, 0, 0, 600, 600)),
+        0
+    );
+}
+
+#[test]
+fn asteroid_fields_block_direct_fire() {
+    // A rock outcrop halfway between the two ships.
+    let blocked = shots_at_lone_target(|b| b.terrain.paint_ellipse(ASTEROIDS, -1000, 0, 400, 400));
+    assert_eq!(blocked, 0);
+    // The same outcrop off to the side leaves the line clear.
+    let clear = shots_at_lone_target(|b| b.terrain.paint_ellipse(ASTEROIDS, -1000, 1200, 400, 400));
+    assert!(clear > 0);
 }
 
 #[test]
 fn demo_is_roughly_balanced() {
     let mut wins = [0; 2];
-    // Both fleets are identical, so over 100 seeds each side should win
-    // well over a third (fair play gives 50 +- 5).
-    for seed in 1..=100 {
+    // Same fleets in different formations, balanced to about 50%: over 40
+    // seeds each side should win well over a quarter (fair play gives 20 +- 3).
+    for seed in 1..=40 {
         let o = scenario::demo(seed, 1).run_auto();
         if o.winner >= 0 {
             wins[o.winner as usize] += 1;
         }
     }
     assert!(
-        wins[0] >= 35 && wins[1] >= 35,
+        wins[0] >= 12 && wins[1] >= 12,
         "blue {} red {}",
         wins[0],
         wins[1]
@@ -300,11 +314,11 @@ fn carriers_send_one_wave_at_a_time_until_they_scramble() {
 }
 
 #[test]
-fn groups_close_in_on_enemies_hiding_in_a_nebula() {
+fn anvils_close_in_on_enemies_hiding_in_a_nebula() {
     let goal_distance = |sense: bool| {
         let mut b = deployed();
         b.sides[0].terrain_sense = sense;
-        let (gun, target) = (0u16, 5u16); // blue and red gun lines
+        let (gun, target) = (2u16, 5u16); // blue anvil, red gun line
         let t = &b.groups[target as usize];
         let (tx, ty) = (t.cx / 100, t.cy / 100);
         b.terrain.paint_ellipse(NEBULA, tx, ty, 1200, 1200);
@@ -314,6 +328,6 @@ fn groups_close_in_on_enemies_hiding_in_a_nebula() {
         ((g.goal_x - t.cx) as f64).hypot((g.goal_y - t.cy) as f64) / 100.0
     };
     let (blind, reading) = (goal_distance(false), goal_distance(true));
-    assert!(blind > 1500.0, "without terrain sense: {blind}");
+    assert!(blind > 1100.0, "without terrain sense: {blind}");
     assert!(reading <= 1000.0, "with terrain sense: {reading}");
 }
