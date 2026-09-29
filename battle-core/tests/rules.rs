@@ -251,14 +251,16 @@ fn nebula_hides_ships_beyond_close_range() {
 #[test]
 fn demo_is_roughly_balanced() {
     let mut wins = [0; 2];
-    for seed in 1..=24 {
+    // Both fleets are identical, so over 100 seeds each side should win
+    // well over a third (fair play gives 50 +- 5).
+    for seed in 1..=100 {
         let o = scenario::demo(seed, 1).run_auto();
         if o.winner >= 0 {
             wins[o.winner as usize] += 1;
         }
     }
     assert!(
-        wins[0] >= 6 && wins[1] >= 6,
+        wins[0] >= 35 && wins[1] >= 35,
         "blue {} red {}",
         wins[0],
         wins[1]
