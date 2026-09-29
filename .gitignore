@@ -62,3 +62,6 @@ steamtmp
 build_output
 built_vdfs
 tmp
+
+# vela-policy local trace logs
+**/ledger/.trace-*
