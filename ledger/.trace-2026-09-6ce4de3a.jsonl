@@ -38,3 +38,12 @@
 {"ts":"2026-09-29T07:14:49.149Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
 {"ts":"2026-09-29T15:31:36.541Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
 {"ts":"2026-09-29T16:22:27.552Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-30T03:53:59.812Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-30T04:15:14.656Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
+{"ts":"2026-09-30T04:15:22.169Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-30T04:26:40.501Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-30T04:27:49.771Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-30T04:31:17.299Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-30T04:47:56.844Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-30T04:52:23.543Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":null}
+{"ts":"2026-09-30T04:52:59.803Z","session_id":"6ce4de3a-d549-51be-99d7-c81da1b26ffd","tool":"Bash","targets":[],"decision":"allow","reason":"bash read-only mention"}
