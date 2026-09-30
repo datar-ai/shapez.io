@@ -21,6 +21,8 @@
   --missile: #ff9ff0;
   --rock: #6b6256;
   --nebula: #7a5cc4;
+  --planet: #a0724a;
+  --gravity: #c9a36b;
   --good: #6fd08c;
   --warn: #f2c14e;
   --bad: #ff6b5e;
@@ -126,8 +128,13 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       <span><i style="background:var(--beam)"></i>光束</span>
       <span><i style="background:var(--kinetic)"></i>動能</span>
       <span><i style="background:var(--missile)"></i>飛彈、魚雷、戰機</span>
-      <span><i class="box" style="background:var(--rock)"></i>小行星帶：減速、掩護</span>
-      <span><i class="box" style="background:var(--nebula)"></i>星雲：1000 以外看不見、光束減半</span>
+      <span><i class="box" style="background:var(--rock)"></i>小行星帶：擋直射、減速、掩護</span>
+      <span><i class="box" style="background:var(--nebula)"></i>星雲：主戰層 1000 以外看不見</span>
+      <span><i class="box" style="background:var(--planet)"></i>星球：擋一切</span>
+      <span><i class="box" style="background:var(--gravity)"></i>重力井：減速、不能跳離</span>
+      <span><i class="box" style="background:var(--muted)"></i>殘骸：下層掩護</span>
+      <span><i class="box" style="background:linear-gradient(90deg,var(--blue),var(--red))"></i>能量場：己方護盾快充</span>
+      <span>虛線外框＝下層</span>
       <span>滾輪縮放，拖曳平移</span>
     </div>
     <div class="empty" id="empty">用 <code>battle --replay out.json</code> 產生重播檔，再從右上角載入。</div>
@@ -170,10 +177,17 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     { name: "驅逐艦", len: 34, wid: 14 },
     { name: "旗艦", len: 95, wid: 42 },
     { name: "航艦", len: 80, wid: 38 },
+    { name: "長程砲艦", len: 72, wid: 18 },
+    { name: "支援艦", len: 44, wid: 28 },
+    { name: "空間站", len: 70, wid: 70 },
+    { name: "跳躍信標", len: 40, wid: 40 },
+    { name: "能量場塔", len: 40, wid: 40 },
   ];
-  const SIG_OF_CLASS = [0, 1, 2, 0, 3];
-  const SIG_NAME = ["主砲齊射", "魚雷齊射", "加力衝刺", "全機出擊"];
-  const VERB = ["", "攻擊", "側擊", "固守", "推進", "集火部位", "換準則", "投入預備隊", "跳躍撤離", "招牌技"];
+  const SIG_OF_CLASS = [0, 1, 2, 0, 3, 4, 5, -1, -1, -1];
+  const SIG_NAME = ["主砲齊射", "魚雷齊射", "加力衝刺", "全機出擊", "落點轟擊", "護盾投射"];
+  const VERB = ["", "攻擊", "側擊", "固守", "推進", "集火部位", "換準則", "投入預備隊", "跳躍撤離", "招牌技", "換層"];
+  const PHASE = ["接近", "交戰", "脫離", "整補"];
+  const LAYER = ["下層", "主戰層"];
   const STATUS = ["交戰", "預備", "撤離中", "潰散", "已撤離", "全滅"];
   const DOCTRINE = ["砲列", "鐵砧", "鐵鎚"];
   const PART = { 1: "引擎", 2: "武器", 4: "護盾產生器", 8: "艦橋" };
@@ -181,12 +195,13 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     "-10": "沒有這個戰鬥群。", "-11": "那不是你的戰鬥群。", "-12": "這個戰鬥群已經退出戰鬥。",
     "-13": "指令點不夠。", "-14": "撤離中的戰鬥群不能再下令。", "-15": "它不在預備隊裡。",
     "-16": "目標必須是還在戰場上的敵方戰鬥群。", "-17": "戰鬥已經結束。", "-18": "招牌技還沒準備好。",
+    "-19": "在重力井裡不能跳躍撤離，先離開重力井。", "-20": "建築不能下令。", "-21": "正在換層。",
   };
-  const EV = { FIRE: 1, LAUNCH: 2, INTERCEPT: 3, MHIT: 4, KILLED: 5, PART: 6, OVERLOAD: 7, ROUTED: 8, ESCAPED: 9, RETREAT: 10, COMMAND: 11, PULSE: 12, FLAGSHIP: 13, OVER: 14, SIG_CHARGE: 15, SIG_FIRE: 16, WING_LAUNCH: 17, FIGHTER_DOWN: 18, WING_STRIKE: 19, WING_LOST: 20 };
+  const EV = { FIRE: 1, LAUNCH: 2, INTERCEPT: 3, MHIT: 4, KILLED: 5, PART: 6, OVERLOAD: 7, ROUTED: 8, ESCAPED: 9, RETREAT: 10, COMMAND: 11, PULSE: 12, FLAGSHIP: 13, OVER: 14, SIG_CHARGE: 15, SIG_FIRE: 16, WING_LAUNCH: 17, FIGHTER_DOWN: 18, WING_STRIKE: 19, WING_LOST: 20, LAYER: 21, BARRAGE: 22, BARRAGE_HIT: 23, PHASE: 24, JUMP_IN: 25, DEBRIS: 26, FIELD_LOST: 27, BOOST: 28 };
 
   const css = getComputedStyle(document.documentElement);
   const C = (n) => css.getPropertyValue("--" + n).trim();
-  const COL = { side: [C("blue"), C("red")], dmg: [C("beam"), C("kinetic"), C("missile")], grid: C("grid"), line: C("line"), fg: C("fg"), muted: C("muted"), warn: C("warn"), good: C("good"), bad: C("bad"), rock: C("rock"), nebula: C("nebula"), bg: C("bg") };
+  const COL = { side: [C("blue"), C("red")], dmg: [C("beam"), C("kinetic"), C("missile")], grid: C("grid"), line: C("line"), fg: C("fg"), muted: C("muted"), warn: C("warn"), good: C("good"), bad: C("bad"), rock: C("rock"), nebula: C("nebula"), planet: C("planet"), gravity: C("gravity"), bg: C("bg") };
 
   const $ = (id) => document.getElementById(id);
   const plot = $("plot"), ctx = plot.getContext("2d");
@@ -228,7 +243,9 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   function setHeader(h) {
     H = h;
     H.sigs = H.groups.map(() => new Set());
-    H.ships.forEach(([cls, , g]) => H.sigs[g].add(SIG_OF_CLASS[cls]));
+    H.ships.forEach(([cls, , g]) => { if (SIG_OF_CLASS[cls] >= 0) H.sigs[g].add(SIG_OF_CLASS[cls]); });
+    H.cells0 = H.terrain ? H.terrain.cells : "";
+    terrainApplied = -1;
     buildTerrain();
     buildGroups();
   }
@@ -244,10 +261,26 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   // ---------------------------------------------------------------------
   // Terrain: painted once into an offscreen canvas in world units
   // ---------------------------------------------------------------------
+  // Terrain changes during a battle (debris, energy fields going down):
+  // replay the terrain events up to the shown tick onto the starting cells.
+  let terrainApplied = -1;
+  function syncTerrain(tick) {
+    if (!H || !H.terrain) return;
+    const evs = events.filter(e => (e[1] === EV.DEBRIS || e[1] === EV.FIELD_LOST) && e[0] <= tick);
+    if (evs.length === terrainApplied) return;
+    terrainApplied = evs.length;
+    const cells = H.cells0.split("");
+    for (const [, k, a, b] of evs) {
+      if (k === EV.DEBRIS) { if (cells[a] === "0") cells[a] = "4"; }
+      else { const f = String(6 + b); for (let i = 0; i < cells.length; i++) if (cells[i] === f) cells[i] = "0"; }
+    }
+    H.terrain.cells = cells.join("");
+    buildTerrain();
+  }
   function buildTerrain() {
     const t = H.terrain;
     terrainCanvas = null;
-    if (!t || !/[12]/.test(t.cells)) return;
+    if (!t || !/[1-7]/.test(t.cells)) return;
     const px = 20; // pixels per cell
     const c = document.createElement("canvas");
     c.width = c.height = t.dim * px;
@@ -265,6 +298,15 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         g.fillStyle = hexA(COL.rock, 0.16); g.fillRect(X, Y, px, px);
         g.fillStyle = hexA(COL.rock, 0.9);
         for (let i = 0; i < 4; i++) { g.beginPath(); g.arc(X + rnd() * px, Y + rnd() * px, 0.8 + rnd() * 2.2, 0, Math.PI * 2); g.fill(); }
+      } else if (k === "3") {
+        g.fillStyle = hexA(COL.gravity, 0.07); g.fillRect(X, Y, px, px);
+      } else if (k === "4") {
+        g.fillStyle = hexA(COL.muted, 0.8);
+        for (let i = 0; i < 6; i++) g.fillRect(X + rnd() * px, Y + rnd() * px, 1.5, 1.5);
+      } else if (k === "5") {
+        g.fillStyle = hexA(COL.planet, 0.85); g.fillRect(X, Y, px, px);
+      } else if (k === "6" || k === "7") {
+        g.fillStyle = hexA(COL.side[+k - 6], 0.09); g.fillRect(X, Y, px, px);
       }
     }
     terrainCanvas = { canvas: c, px, dim: t.dim, cell: t.cell };
@@ -298,15 +340,19 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   }
   function updateGroups(frame) {
     frame.g.forEach((g, i) => {
-      const [, , , , coh, st, , alive, sig, armed, out, docked] = g;
+      const [, , , , coh, st, , alive, sig, armed, out, docked, ph, ly] = g;
       const air = out || docked ? ` · 戰機 出擊 ${out} / 機庫 ${docked}` : "";
-      $("gs" + i).textContent = `${STATUS[st]} · ${alive} 艘 · ${coh}${air}`;
+      const fixed = H.groups[i].fixed;
+      const state = st === 0 && !fixed ? PHASE[ph ?? 1] : STATUS[st];
+      const layer = fixed || st >= 3 ? "" : ` · ${LAYER[(ly ?? 1) & 1]}${(ly ?? 0) & 2 ? "（換層中）" : ""}`;
+      $("gs" + i).textContent = fixed ? (alive ? "建築" : "已摧毀") : `${state}${layer} · ${alive} 艘 · ${coh}${air}`;
       const b = $("gb" + i);
       b.style.width = (coh / 10) + "%";
       b.style.background = coh > 600 ? COL.good : coh > 250 ? COL.warn : COL.bad;
       const gg = $("gg" + i);
-      gg.textContent = st >= 3 ? "" : `${gg.dataset.name}：${sigText(sig ?? 0, armed)}`;
-      $("gd" + i).textContent = DOCTRINE[H.groups[i].doctrineNow ?? H.groups[i].doctrine];
+      gg.textContent = st >= 3 || !gg.dataset.name ? "" : `${gg.dataset.name}：${sigText(sig ?? 0, armed)}`;
+      $("gd" + i).textContent = fixed ? "" : DOCTRINE[H.groups[i].doctrineNow ?? H.groups[i].doctrine];
+      if (fixed) { b.style.width = alive ? "100%" : "0%"; b.style.background = COL.muted; }
       const el = $("grp" + i);
       el.classList.toggle("sel", i === sel);
       el.classList.toggle("pick", !!pending && pending.needs === "enemy" && H.groups[i].side === 1 && st <= 2);
@@ -314,7 +360,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   }
 
   let lastLogPulse = -1;
-  function logEvent([t, k, a, b, c]) {
+  function logEvent([t, k, a, b, c, e5]) {
     let text = null, cls = "";
     const G = (i) => `<span style="color:${COL.side[H.groups[i].side]}">${esc(H.groups[i].name)}</span>`;
     if (k === EV.PULSE) { text = `脈衝 ${c} 開始`; cls = "hd"; }
@@ -324,6 +370,11 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     else if (k === EV.RETREAT) text = `${G(a)} 開始撤離，15 秒內不能開火`;
     else if (k === EV.SIG_CHARGE) text = `${G(a)} 招牌技充能（${(c / H.tickHz).toFixed(0)} 秒後發動）`;
     else if (k === EV.SIG_FIRE) text = `${G(a)} 發動 ${[...H.sigs[a]].map(s => SIG_NAME[s]).join("＋")}`;
+    else if (k === EV.LAYER && e5 === 1) text = `${G(a)} ${c === 0 ? "下降到下層" : "爬升到主戰層"}（4 秒，期間護盾較弱）`;
+    else if (k === EV.PHASE && (c === 2 || c === 3)) text = `${G(a)} ${c === 2 ? "損耗過大，脫離整補" : "退到射程外整補"}`;
+    else if (k === EV.BARRAGE) text = `<span style="color:${COL.side[e5]}">${e5 ? "紅" : "藍"}方</span>長程砲艦標定落點（5 秒後落下）`;
+    else if (k === EV.JUMP_IN) text = `${G(a)} 從跳躍信標躍入戰場`;
+    else if (k === EV.FIELD_LOST) text = `<span style="color:${COL.side[b]}">${b ? "紅" : "藍"}方</span>能量場塔被毀，能量場消失`;
     else if (k === EV.FLAGSHIP) text = `<span style="color:${COL.side[b]}">${b ? "紅" : "藍"}方旗艦</span> 被擊沉`;
     else if (k === EV.OVER) { text = c < 0 ? "平手" : `<span style="color:${COL.side[c]}">${c ? "紅" : "藍"}方勝</span>`; cls = "hd"; }
     if (!text) return;
@@ -392,6 +443,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     const [f0, f1, t] = F;
     const tick = f0.t + (f1.t - f0.t) * t;
     drawGrid(r);
+    syncTerrain(tick);
     drawTerrain();
     const pos = new Array(H.ships.length);
     const cur = t < 0.5 ? f0 : f1;
@@ -426,18 +478,35 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       const spec = CLASS[cls];
       const X = sx(x), Y = sy(y);
       const L = spec.len * k * 0.5, Wi = spec.wid * k * 0.5;
+      const ly = a[7] ?? 1, low = (ly & 1) === 0, moving = (ly & 2) !== 0;
       ctx.save();
-      ctx.translate(X, Y); ctx.rotate(-h);
+      ctx.translate(X, Y); ctx.rotate(cls >= 7 ? 0 : -h);
       ctx.beginPath();
       if (cls === 4) { // carrier: flat-topped hull
         ctx.moveTo(L, -Wi * 0.5); ctx.lineTo(L, Wi * 0.5); ctx.lineTo(-L * 0.8, Wi); ctx.lineTo(-L * 0.8, -Wi); ctx.closePath();
+      } else if (cls === 5) { // gunship: long barrel
+        ctx.moveTo(L * 1.2, -Wi * 0.2); ctx.lineTo(L * 1.2, Wi * 0.2); ctx.lineTo(-L * 0.7, Wi); ctx.lineTo(-L * 0.7, -Wi); ctx.closePath();
+      } else if (cls === 6) { // support: rounded
+        ctx.ellipse(0, 0, L * 0.8, Wi, 0, 0, Math.PI * 2);
+      } else if (cls === 7) { // station: octagon
+        for (let v = 0; v < 8; v++) { const an = v * Math.PI / 4 + Math.PI / 8; ctx.lineTo(Math.cos(an) * L, Math.sin(an) * L); }
+        ctx.closePath();
+      } else if (cls === 8) { // beacon: diamond
+        ctx.moveTo(L, 0); ctx.lineTo(0, L); ctx.lineTo(-L, 0); ctx.lineTo(0, -L); ctx.closePath();
+      } else if (cls === 9) { // pylon: triangle
+        ctx.moveTo(0, -L); ctx.lineTo(L * 0.9, L * 0.6); ctx.lineTo(-L * 0.9, L * 0.6); ctx.closePath();
       } else {
         ctx.moveTo(L, 0); ctx.lineTo(-L * 0.7, Wi); ctx.lineTo(-L * 0.45, 0); ctx.lineTo(-L * 0.7, -Wi); ctx.closePath();
       }
       ctx.fillStyle = COL.side[side];
-      ctx.globalAlpha = 0.35 + 0.65 * a[3] / 100;
+      ctx.globalAlpha = (0.35 + 0.65 * a[3] / 100) * (low ? 0.55 : 1);
       ctx.fill();
       ctx.globalAlpha = 1;
+      if (low || moving) {
+        // Low layer: dashed outline (a shadow on the plane below the main layer).
+        ctx.strokeStyle = moving ? COL.warn : COL.side[side]; ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]); ctx.stroke(); ctx.setLineDash([]);
+      }
       if (grp === sel) { ctx.strokeStyle = COL.fg; ctx.lineWidth = 1; ctx.stroke(); }
       ctx.restore();
       if (a[6] & 16) { ctx.strokeStyle = COL.warn; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(X, Y, L * 1.2 + 2, 0, Math.PI * 2); ctx.stroke(); }
@@ -520,6 +589,20 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       }
     }
 
+    // marked barrages: the landing circle, shown to both sides
+    for (const [x, y, side, left] of cur.k || []) {
+      const R0 = 600 * view.scale;
+      ctx.strokeStyle = COL.side[side]; ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.arc(sx(x), sy(y), R0, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.12; ctx.fillStyle = COL.warn;
+      ctx.beginPath(); ctx.moveTo(sx(x), sy(y)); ctx.arc(sx(x), sy(y), R0, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - left / (5 * H.tickHz))); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = COL.warn; ctx.font = `12px ${C("font-data")}`; ctx.textAlign = "center";
+      ctx.fillText(`轟擊 ${(left / H.tickHz).toFixed(1)}s`, sx(x), sy(y) + 4);
+    }
+
     // group labels, cohesion and signature state
     ctx.font = `12px ${C("font-body")}`;
     ctx.textAlign = "center";
@@ -542,8 +625,11 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         ctx.globalAlpha = 1;
       }
       ctx.fillStyle = st === 3 ? COL.muted : COL.side[H.groups[gi].side];
-      const tag = st === 3 ? "（潰散）" : st === 2 ? "（撤離中）" : st === 1 ? "（預備）" : sig < 0 ? "（招牌技充能）" : "";
-      ctx.fillText(name + tag, X, Y - 28);
+      const ph = g[12], ly = g[13] ?? 1;
+      const tag = st === 3 ? "（潰散）" : st === 2 ? "（撤離中）" : st === 1 ? "（預備）" : sig < 0 ? "（招牌技充能）"
+        : ly & 2 ? "（換層中）" : ph === 2 ? "（脫離）" : ph === 3 ? "（整補）" : "";
+      const lowTag = !H.groups[gi].fixed && (ly & 1) === 0 ? "・下層" : "";
+      ctx.fillText(name + lowTag + tag, X, Y - 28);
       ctx.fillStyle = COL.grid; ctx.fillRect(X - 20, Y - 23, 40, 3);
       ctx.fillStyle = coh > 600 ? COL.good : coh > 250 ? COL.warn : COL.bad;
       ctx.fillRect(X - 20, Y - 23, 40 * coh / 1000, 3);
@@ -774,6 +860,8 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         ${btn("flankR", "右側擊", 1, can(1), armed(2))}
         ${btn("advance", "推進到…", 1, can(1), armed(4))}
         ${btn("sig", sigArmed ? sigName + "（待發）" : sigName, 1, can(1) && sig === 0 && !sigArmed)}
+        ${btn("layer", (g[13] & 2) ? "換層中…" : (g[13] & 1) ? "下降到下層" : "爬升到主戰層", 1, can(1) && !(g[13] & 2))}
+        <div class="lbl">換層 4 秒，期間護盾較弱。跨層射擊射程短、準度差，但打在對方側面護盾。</div>
         <div class="lbl">集火部位（1 點）</div>
         <div class="row4">${[1, 2, 4, 8].map(p => btn("part" + p, PART[p], "", can(1))).join("")}</div>
         <div class="lbl">準則（1 點）：${DOCTRINE[H.groups[sel].doctrineNow]}</div>
@@ -795,6 +883,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     else if (id === "advance") pending = pending && pending.verb === 4 ? null : { verb: 4, needs: "point" };
     else if (id === "hold") return issue(3);
     else if (id === "sig") return issue(9);
+    else if (id === "layer") return issue(10);
     else if (id === "reserve") return issue(7);
     else if (id === "retreat") {
       if (pending && pending.verb === 8) return issue(8);
@@ -810,7 +899,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       if (H.groups[i].side === 1) return issue(pending.verb, i);
       pending = null;
     }
-    if (H.groups[i].side === 0) { sel = i; pending = null; lastMsg = ""; }
+    if (H.groups[i].side === 0 && !H.groups[i].fixed) { sel = i; pending = null; lastMsg = ""; }
     renderOrders(); render();
   }
   function nearestGroup(px, py) {

@@ -56,12 +56,27 @@ fn main() {
                     "投入預備隊",
                     "跳躍撤離",
                     "招牌技",
+                    "換層",
                 ][e.c as usize];
                 println!("  [脈衝 {}] {} → {}", b.pulse(), g.name, verb);
             }
             if e.kind == ev::GROUP_ROUTED {
                 println!(
                     "  {:>5.1}s  {} 潰散",
+                    e.tick as f64 / TICK_HZ as f64,
+                    b.groups[e.a as usize].name
+                );
+            }
+            if e.kind == ev::PHASE && e.c == Phase::Disengage as i32 {
+                println!(
+                    "  {:>5.1}s  {} 脫離整補",
+                    e.tick as f64 / TICK_HZ as f64,
+                    b.groups[e.a as usize].name
+                );
+            }
+            if e.kind == ev::JUMP_IN {
+                println!(
+                    "  {:>5.1}s  {} 從跳躍信標躍入",
                     e.tick as f64 / TICK_HZ as f64,
                     b.groups[e.a as usize].name
                 );

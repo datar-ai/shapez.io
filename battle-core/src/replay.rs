@@ -43,10 +43,11 @@ pub fn write_header(o: &mut String, b: &Battle) {
         }
         let _ = write!(
             o,
-            "{{\"name\":\"{}\",\"side\":{},\"doctrine\":{}}}",
+            "{{\"name\":\"{}\",\"side\":{},\"doctrine\":{},\"fixed\":{}}}",
             g.name.replace('"', "'"),
             g.side,
-            g.doctrine as u8
+            g.doctrine as u8,
+            g.fixed
         );
     }
     let _ = write!(
@@ -79,14 +80,15 @@ pub fn write_frame(o: &mut String, b: &Battle) {
         let sh = s.shield[i].iter().sum::<i32>() * 100 / sh_max.max(1);
         let _ = write!(
             o,
-            "[{},{},{},{},{},{},{}]",
+            "[{},{},{},{},{},{},{},{}]",
             s.x[i] / FP,
             s.y[i] / FP,
             s.heading[i] >> 8,
             hp,
             sh,
             (s.stress[i] * 100 / st.max_stress.max(1)).min(100),
-            s.parts[i] | if s.overload[i] > 0 { 16 } else { 0 }
+            s.parts[i] | if s.overload[i] > 0 { 16 } else { 0 },
+            layer_code(s.layer[i])
         );
     }
     o.push_str("],\"m\":[");
@@ -157,7 +159,7 @@ pub fn write_frame(o: &mut String, b: &Battle) {
         };
         let _ = write!(
             o,
-            "[{},{},{},{},{},{},{},{},{},{},{},{}]",
+            "[{},{},{},{},{},{},{},{},{},{},{},{},{},{}]",
             g.cx / FP,
             g.cy / FP,
             g.goal_x / FP,
@@ -169,10 +171,41 @@ pub fn write_frame(o: &mut String, b: &Battle) {
             sig,
             g.sig_armed as u8,
             fighters[gi][0],
-            fighters[gi][1]
+            fighters[gi][1],
+            g.phase as u8,
+            layer_code(
+                g.layer
+                    | if g.layer_until != crate::battle::NONE {
+                        LAYER_MOVING
+                    } else {
+                        0
+                    }
+            )
+        );
+    }
+    // Marked barrages still to land: x, y, side, ticks left.
+    o.push_str("],\"k\":[");
+    let mut first = true;
+    for st in b.strikes.iter().filter(|st| st.land > b.tick) {
+        if !first {
+            o.push(',');
+        }
+        first = false;
+        let _ = write!(
+            o,
+            "[{},{},{},{}]",
+            st.x / FP,
+            st.y / FP,
+            st.side,
+            st.land - b.tick
         );
     }
     o.push_str("]}");
+}
+
+/// Layer for the viewer: 0 low, 1 main, plus 2 while climbing or diving.
+fn layer_code(l: u8) -> u8 {
+    (l & 0x7f) | if l & LAYER_MOVING != 0 { 2 } else { 0 }
 }
 
 /// Captures one frame every `every` steps plus all notable events.

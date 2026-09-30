@@ -163,6 +163,7 @@ pub unsafe extern "C" fn bc_issue(
         7 => Command::CommitReserve { group },
         8 => Command::Retreat { group },
         9 => Command::Signature { group },
+        10 => Command::ChangeLayer { group },
         _ => return BC_ERR_BAD_COMMAND,
     };
     guard(BC_ERR_PANIC, || {
@@ -191,6 +192,8 @@ pub struct BcShipView {
     pub parts: *const u8,
     pub state: *const u8,
     pub target: *const u32,
+    /// Height layer: 0 low, 1 main; bit 0x80 while climbing or diving.
+    pub layer: *const u8,
     /// Fixed-point steps per distance unit.
     pub fp: i32,
 }
@@ -212,6 +215,7 @@ pub unsafe extern "C" fn bc_ships(b: *const BcBattle) -> BcShipView {
         parts: s.parts.as_ptr(),
         state: s.state.as_ptr(),
         target: s.target.as_ptr(),
+        layer: s.layer.as_ptr(),
         fp: crate::fixed::FP,
     }
 }

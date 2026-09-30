@@ -27,6 +27,18 @@ pub enum ShipClass {
     Destroyer = 2,
     Flagship = 3,
     Carrier = 4,
+    /// Long-range gunship: must stand still to deploy before its guns fire.
+    Artillery = 5,
+    /// Support ship: stays behind its group, repairs and projects shields.
+    Support = 6,
+    /// Space station: a fixed fort with its own guns (terrain with teeth).
+    Station = 7,
+    /// Jump beacon (faction terrain, a point): the side's reserve jumps in
+    /// here, and groups near it jump out faster.
+    Beacon = 8,
+    /// Field pylon (faction terrain, an area): powers an energy field that
+    /// recharges its own side's shields and stops the enemy's.
+    Pylon = 9,
 }
 
 impl ShipClass {
@@ -36,7 +48,12 @@ impl ShipClass {
             1 => ShipClass::Cruiser,
             2 => ShipClass::Destroyer,
             3 => ShipClass::Flagship,
-            _ => ShipClass::Carrier,
+            4 => ShipClass::Carrier,
+            5 => ShipClass::Artillery,
+            6 => ShipClass::Support,
+            7 => ShipClass::Station,
+            8 => ShipClass::Beacon,
+            _ => ShipClass::Pylon,
         }
     }
     pub fn stats(self) -> &'static ClassStats {
@@ -49,6 +66,11 @@ impl ShipClass {
             ShipClass::Destroyer => "destroyer",
             ShipClass::Flagship => "flagship",
             ShipClass::Carrier => "carrier",
+            ShipClass::Artillery => "artillery",
+            ShipClass::Support => "support",
+            ShipClass::Station => "station",
+            ShipClass::Beacon => "beacon",
+            ShipClass::Pylon => "pylon",
         }
     }
 }
@@ -142,6 +164,17 @@ pub struct ClassStats {
     pub hangar: u8,
     /// What this class does when its group uses its signature move.
     pub signature: Signature,
+    /// Ticks a ship must hold still before its main gun can fire (0: none).
+    pub deploy: u16,
+    /// Hull repaired each second on the most damaged friendly ship nearby.
+    pub repair: i32,
+}
+
+impl ClassStats {
+    /// Structures never move and are not commanded.
+    pub fn fixed(&self) -> bool {
+        self.max_speed == 0
+    }
 }
 
 /// Signature moves: one per class, bought with a command point. A bought move
@@ -159,6 +192,14 @@ pub enum Signature {
     Afterburn = 2,
     /// Carriers: every wing rearmed and launched at once.
     Scramble = 3,
+    /// Long-range gunships: a barrage on a marked spot that lands a few
+    /// seconds later. The mark is shown to both sides, so it can be dodged.
+    Barrage = 4,
+    /// Support ships: give every friendly ship nearby half its shields back
+    /// and fix their shield generators.
+    ShieldBoost = 5,
+    /// Structures have none.
+    Nothing = 6,
 }
 
 /// Ticks between buying a signature move and its effect.
@@ -196,6 +237,35 @@ pub const REARM_TICKS: u16 = 40;
 /// A wing heads home when it is down to this many fighters.
 pub const WING_RETURN_AT: u8 = 3;
 
+/// Barrage: radius of the marked circle, delay before it lands, and damage
+/// per gunship to every enemy ship inside.
+pub const BARRAGE_RADIUS: i32 = 600 * FP;
+pub const BARRAGE_DELAY: u32 = 5 * TICK_HZ;
+pub const BARRAGE_DAMAGE: i32 = 700;
+/// Support ships repair ships within this distance, and their shield boost
+/// reaches this far.
+pub const REPAIR_RANGE: i32 = 900 * FP;
+pub const SHIELD_BOOST_RANGE: i32 = 1500 * FP;
+/// Artillery counts as holding still below this share (percent) of its top speed.
+pub const DEPLOY_STILL_PCT: i32 = 20;
+
+/// Height layers. Ships fight on the main layer or drop to the low (orbital
+/// and terrain) layer; fighter wings fly on their own layer above both.
+pub const LAYER_LOW: u8 = 0;
+pub const LAYER_MAIN: u8 = 1;
+pub const LAYER_FIGHTER: u8 = 2;
+/// Set on a ship's layer while its group climbs or dives: it counts as on
+/// both layers and its shields take half again as much.
+pub const LAYER_MOVING: u8 = 0x80;
+pub const LAYER_CHANGE_TICKS: u32 = 4 * TICK_HZ;
+/// Shooting at a ship on the other layer: less accurate and shorter reach,
+/// but the shot comes from above or below and hits a side shield.
+pub const CROSS_LAYER_ACCURACY: i32 = 150;
+pub const CROSS_LAYER_RANGE_PCT: i64 = 85;
+/// A group in the jump beacon's reach charges its jump drives this long.
+pub const BEACON_RETREAT_TICKS: u32 = 7 * TICK_HZ;
+pub const BEACON_REACH: i32 = 2500 * FP;
+
 /// Heavy torpedo from the cruiser signature move.
 pub const TORPEDO: MissileRack = MissileRack {
     range: 3600 * FP,
@@ -218,7 +288,7 @@ const fn ups(v: i32) -> i32 {
     v * FP / TICK_HZ as i32
 }
 
-pub static CLASS_STATS: [ClassStats; 5] = [
+pub static CLASS_STATS: [ClassStats; 10] = [
     // Battleship: slow, heavy kinetic broadsides, thick front shield.
     ClassStats {
         max_speed: ups(30),
@@ -245,6 +315,8 @@ pub static CLASS_STATS: [ClassStats; 5] = [
         pd: autocannons(3),
         hangar: 0,
         signature: Signature::Salvo,
+        deploy: 0,
+        repair: 0,
     },
     // Cruiser: beam lance forward, missile rack, middling everything.
     ClassStats {
@@ -277,6 +349,8 @@ pub static CLASS_STATS: [ClassStats; 5] = [
         pd: autocannons(2),
         hangar: 0,
         signature: Signature::Torpedoes,
+        deploy: 0,
+        repair: 0,
     },
     // Destroyer: fast, turreted autocannons, strong point defense.
     ClassStats {
@@ -304,6 +378,8 @@ pub static CLASS_STATS: [ClassStats; 5] = [
         pd: autocannons(5),
         hangar: 0,
         signature: Signature::Afterburn,
+        deploy: 0,
+        repair: 0,
     },
     // Flagship: a tougher battleship whose loss shakes the whole fleet.
     ClassStats {
@@ -331,6 +407,8 @@ pub static CLASS_STATS: [ClassStats; 5] = [
         pd: autocannons(4),
         hangar: 0,
         signature: Signature::Salvo,
+        deploy: 0,
+        repair: 0,
     },
     // Carrier: slow, light guns, strong point defense, two fighter wings.
     ClassStats {
@@ -358,8 +436,158 @@ pub static CLASS_STATS: [ClassStats; 5] = [
         pd: autocannons(3),
         hangar: 3 * WING_WAVE,
         signature: Signature::Scramble,
+        deploy: 0,
+        repair: 0,
+    },
+    // Long-range gunship: very slow, must deploy (hold still 3 s) to fire;
+    // outranges everything, but cannot see into a nebula from afar.
+    ClassStats {
+        max_speed: ups(22),
+        accel: 5,
+        turn_rate: deg(10) / TICK_HZ as u16,
+        radius: 50 * FP,
+        hull: 3200,
+        shield: [1600, 1100, 500],
+        shield_regen: 6,
+        armor: 30,
+        max_stress: 2400,
+        stress_decay: 10,
+        cost: 7,
+        primary: Weapon {
+            dtype: DamageType::Kinetic,
+            range: 4800 * FP,
+            arc_half: deg(25),
+            cooldown: 80,
+            damage: 700,
+            accuracy: 700,
+            stress: 300,
+        },
+        missiles: None,
+        pd: autocannons(2),
+        hangar: 0,
+        signature: Signature::Barrage,
+        deploy: 3 * TICK_HZ as u16,
+        repair: 0,
+    },
+    // Support ship: weak beam, thick shields, keeps to the back of its group
+    // and patches up whoever is hurt worst nearby.
+    ClassStats {
+        max_speed: ups(40),
+        accel: 9,
+        turn_rate: deg(22) / TICK_HZ as u16,
+        radius: 40 * FP,
+        hull: 2200,
+        shield: [2000, 1500, 900],
+        shield_regen: 10,
+        armor: 25,
+        max_stress: 2000,
+        stress_decay: 10,
+        cost: 5,
+        primary: Weapon {
+            dtype: DamageType::Beam,
+            range: 1000 * FP,
+            arc_half: deg(90),
+            cooldown: 30,
+            damage: 120,
+            accuracy: 750,
+            stress: 40,
+        },
+        missiles: None,
+        pd: autocannons(4),
+        hangar: 0,
+        signature: Signature::ShieldBoost,
+        deploy: 0,
+        repair: 40,
+    },
+    // Space station: fixed fort. Heavy guns all round, a missile battery and
+    // the most autocannons of anything.
+    ClassStats {
+        max_speed: 0,
+        accel: 0,
+        turn_rate: 0,
+        radius: 90 * FP,
+        hull: 12000,
+        shield: [2500, 2500, 2500],
+        shield_regen: 10,
+        armor: 50,
+        max_stress: 6000,
+        stress_decay: 20,
+        cost: 12,
+        primary: Weapon {
+            dtype: DamageType::Kinetic,
+            range: 2600 * FP,
+            arc_half: deg(180),
+            cooldown: 30,
+            damage: 380,
+            accuracy: 760,
+            stress: 100,
+        },
+        missiles: Some(MissileRack {
+            range: 3200 * FP,
+            cooldown: 120,
+            damage: 520,
+            speed: ups(140),
+        }),
+        pd: autocannons(8),
+        hangar: 0,
+        signature: Signature::Nothing,
+        deploy: 0,
+        repair: 0,
+    },
+    // Jump beacon: unarmed.
+    ClassStats {
+        max_speed: 0,
+        accel: 0,
+        turn_rate: 0,
+        radius: 40 * FP,
+        hull: 3500,
+        shield: [1500, 1500, 1500],
+        shield_regen: 6,
+        armor: 30,
+        max_stress: 3000,
+        stress_decay: 10,
+        cost: 4,
+        primary: UNARMED,
+        missiles: None,
+        pd: autocannons(2),
+        hangar: 0,
+        signature: Signature::Nothing,
+        deploy: 0,
+        repair: 0,
+    },
+    // Field pylon: unarmed.
+    ClassStats {
+        max_speed: 0,
+        accel: 0,
+        turn_rate: 0,
+        radius: 40 * FP,
+        hull: 4500,
+        shield: [1800, 1800, 1800],
+        shield_regen: 6,
+        armor: 30,
+        max_stress: 3000,
+        stress_decay: 10,
+        cost: 5,
+        primary: UNARMED,
+        missiles: None,
+        pd: autocannons(2),
+        hangar: 0,
+        signature: Signature::Nothing,
+        deploy: 0,
+        repair: 0,
     },
 ];
+
+/// Main "gun" of an unarmed structure: never in range.
+const UNARMED: Weapon = Weapon {
+    dtype: DamageType::Kinetic,
+    range: 0,
+    arc_half: 0,
+    cooldown: 20,
+    damage: 0,
+    accuracy: 0,
+    stress: 0,
+};
 
 /// Doctrine card: how a group behaves when nobody is spending points on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -382,6 +610,18 @@ impl Doctrine {
             Doctrine::Hammer => 450,
         }
     }
+    /// When a group fighting on its own pulls back to refit: its shields
+    /// (permille of full) or its cohesion falls below these.
+    pub fn disengage_at(self) -> (i64, i32) {
+        match self {
+            // Gun lines save their ships once the shields are gone.
+            Doctrine::Line => (200, 350),
+            // Anvils hold on: only a shaken anvil lets go.
+            Doctrine::Anvil => (0, 300),
+            // Hammers hit and run.
+            Doctrine::Hammer => (150, 450),
+        }
+    }
     pub fn from_u8(v: u8) -> Doctrine {
         match v {
             0 => Doctrine::Line,
@@ -390,6 +630,29 @@ impl Doctrine {
         }
     }
 }
+
+/// Where a group fighting on its own (the doctrine default) is in its
+/// doctrine card: approach, engage, pull back when worn down, refit, return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Phase {
+    Approach = 0,
+    Engage = 1,
+    Disengage = 2,
+    Refit = 3,
+}
+
+/// A group pulls back to refit at most once per battle. It refits until
+/// its shields are back to this
+/// (permille of full), or for at most `REFIT_MAX_TICKS`.
+pub const REFIT_SHIELDS: i64 = 700;
+pub const REFIT_MAX_TICKS: u32 = 25 * TICK_HZ;
+/// Pulling back ends after this long even if the enemy follows.
+pub const DISENGAGE_MAX_TICKS: u32 = 15 * TICK_HZ;
+/// While refitting out of contact, cohesion recovers this much per second,
+/// up to `REFIT_COHESION_CAP`.
+pub const REFIT_COHESION_PER_S: i32 = 8;
+pub const REFIT_COHESION_CAP: i32 = 600;
 
 /// Parts that can be knocked out. Stored as bit flags on each ship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -467,6 +730,10 @@ pub enum Command {
     Signature {
         group: u16,
     },
+    /// Climb to the main layer or drop to the low layer.
+    ChangeLayer {
+        group: u16,
+    },
 }
 
 impl Command {
@@ -487,7 +754,8 @@ impl Command {
             | Command::SetDoctrine { group, .. }
             | Command::CommitReserve { group }
             | Command::Retreat { group }
-            | Command::Signature { group } => group,
+            | Command::Signature { group }
+            | Command::ChangeLayer { group } => group,
         }
     }
 }
@@ -503,6 +771,12 @@ pub enum CommandError {
     BadTarget,
     BattleOver,
     SignatureNotReady,
+    /// Jump drives do not work inside a gravity well.
+    InGravityWell,
+    /// Structures cannot be commanded.
+    Fixed,
+    /// Already climbing or diving.
+    ChangingLayer,
 }
 
 /// Event kinds, shared with the C interface.
@@ -527,6 +801,14 @@ pub mod ev {
     pub const FIGHTER_DOWN: u8 = 18; // a = wing, b = shooter ship, or wing | 1<<31
     pub const WING_STRIKE: u8 = 19; // a = wing, b = target ship, c = damage
     pub const WING_LOST: u8 = 20; // a = wing
+    pub const LAYER_CHANGED: u8 = 21; // a = group, c = new layer (d = 1 when it starts moving)
+    pub const BARRAGE_MARKED: u8 = 22; // a = strike id, b = x (units, as i32), c = y (units), d = side
+    pub const BARRAGE_HIT: u8 = 23; // a = strike id, c = ships hit
+    pub const PHASE: u8 = 24; // a = group, c = new phase
+    pub const JUMP_IN: u8 = 25; // a = group, b = beacon ship
+    pub const DEBRIS: u8 = 26; // a = terrain cell index
+    pub const FIELD_LOST: u8 = 27; // a = pylon ship, b = side
+    pub const SHIELD_BOOST: u8 = 28; // a = support ship, c = ships boosted
 }
 
 /// One simulation event. `#[repr(C)]` so the engine can read the list directly.

@@ -39,6 +39,7 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
     }
     let d = dist(g, nearest);
     let (mut salvo, mut torpedo, mut burner, mut carriers) = (0, 0, 0, 0);
+    let (mut gunships, mut support) = (0, 0);
     for &id in &g.ships {
         let i = id as usize;
         if b.ships.state[i] != ALIVE {
@@ -49,6 +50,9 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
             Signature::Torpedoes => torpedo += 1,
             Signature::Afterburn => burner += 1,
             Signature::Scramble => carriers += 1,
+            Signature::Barrage => gunships += 1,
+            Signature::ShieldBoost => support += 1,
+            Signature::Nothing => {}
         }
     }
     let mut best = None;
@@ -65,6 +69,18 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
         && d > 1800 * FP as i64
     {
         consider(45);
+    }
+    // Barrages hit hardest on a slow, bunched-up target.
+    if gunships > 0 && d <= 6500 * FP as i64 {
+        consider(if nearest.speed <= 35 * FP / TICK_HZ as i32 {
+            55
+        } else {
+            40
+        });
+    }
+    // Shield boost once the shields are worn down.
+    if support > 0 && g.shield_pm < 550 {
+        consider(50);
     }
     if carriers > 0 {
         // Worth it when two or more waves sit ready in the hangars (sending
@@ -90,12 +106,24 @@ fn signature_score(b: &Battle, g: &Group, nearest: &Group) -> Option<i32> {
 /// The rule-of-thumb plan: score every sensible command, buy the best.
 pub fn heuristic_plan(b: &Battle, side: u8) -> Vec<Command> {
     let mut options: Vec<(i32, Command)> = Vec::new();
-    let mine: Vec<&Group> = b.groups.iter().filter(|g| g.side == side).collect();
-    let theirs: Vec<&Group> = b
+    let mine: Vec<&Group> = b
         .groups
         .iter()
-        .filter(|g| g.side != side && g.status.in_battle() && g.alive > 0)
+        .filter(|g| g.side == side && !g.fixed)
         .collect();
+    // The enemy fleet; its structures only once the fleet is gone.
+    let mut theirs: Vec<&Group> = b
+        .groups
+        .iter()
+        .filter(|g| g.side != side && g.status.in_battle() && g.alive > 0 && !g.fixed)
+        .collect();
+    if theirs.is_empty() {
+        theirs = b
+            .groups
+            .iter()
+            .filter(|g| g.side != side && g.status.in_battle() && g.alive > 0)
+            .collect();
+    }
     if theirs.is_empty() {
         return Vec::new();
     }
@@ -195,7 +223,15 @@ pub const LOOKAHEAD_TICKS: u32 = 20 * TICK_HZ;
 /// Battles bigger than this plan by rule of thumb only.
 pub const LOOKAHEAD_MAX_SHIPS: usize = 1500;
 
+/// A pulse with no ship sunk on either side is a stand-off.
+pub const STALE_TICKS: u32 = PULSE_TICKS;
+
 pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
+    // In a stand-off, playing ahead finds that holding back always costs
+    // least, so nobody moves; both commanders send their idle groups in.
+    if b.tick >= b.last_kill + STALE_TICKS && b.pulse() >= 2 {
+        return press_attack(b, side);
+    }
     let base = heuristic_plan(b, side);
     // Big battles skip it: each look ahead copies the whole battle.
     if b.lookahead || !b.sides[side as usize].terrain_sense || b.ships.len() > LOOKAHEAD_MAX_SHIPS {
@@ -208,18 +244,123 @@ pub fn plan(b: &Battle, side: u8) -> Vec<Command> {
     } else {
         Vec::new()
     };
-    let mut best = (play_forward(b, side, &base, &their), base.clone());
-    for cand in candidates(b, side, &base) {
-        let sc = play_forward(b, side, &cand, &their);
-        if sc > best.0 {
-            best = (sc, cand);
+    // Screen every candidate over a short look, then play the best few
+    // (and the plan as it stands) over the full look.
+    let mut plans = vec![base];
+    plans.extend(candidates(b, side, &plans[0]));
+    let screen = evaluate(b, side, &plans, &their, SCREEN_TICKS);
+    let mut order: Vec<usize> = (1..plans.len()).collect();
+    order.sort_by_key(|&k| (std::cmp::Reverse(screen[k]), k));
+    order.truncate(FINALISTS);
+    order.insert(0, 0);
+    let finalists: Vec<Vec<Command>> = order.iter().map(|&k| plans[k].clone()).collect();
+    let full = evaluate(b, side, &finalists, &their, LOOKAHEAD_TICKS);
+    // Ties go to the plan listed first (the rule-of-thumb plan).
+    let mut best = 0;
+    for k in 1..full.len() {
+        if full[k] > full[best] {
+            best = k;
         }
     }
-    best.1
+    finalists[best].clone()
+}
+
+/// Stand-off plan: every group told to hold or move somewhere goes back to
+/// fighting the nearest enemy group, most valuable groups first.
+fn press_attack(b: &Battle, side: u8) -> Vec<Command> {
+    let base = heuristic_plan(b, side);
+    let theirs: Vec<&Group> = b
+        .groups
+        .iter()
+        .filter(|g| g.side != side && g.status.in_battle() && g.alive > 0 && !g.fixed)
+        .collect();
+    let mut idle: Vec<&Group> = b
+        .groups
+        .iter()
+        .filter(|g| {
+            g.side == side
+                && !g.fixed
+                && g.status == GroupStatus::Active
+                && matches!(g.order, Order::Hold { .. } | Order::Advance { .. })
+        })
+        .collect();
+    idle.sort_by_key(|g| (std::cmp::Reverse(g.alive_value), g.id));
+    let mut plan = Vec::new();
+    for g in idle {
+        if let Some(t) = theirs.iter().min_by_key(|t| (dist(g, t), t.id)) {
+            plan.push(Command::Attack {
+                group: g.id,
+                target: t.id,
+            });
+        }
+    }
+    // Spend what is left on the usual plan for the other groups.
+    for cmd in base {
+        if !plan.iter().any(|c: &Command| c.group() == cmd.group()) {
+            plan.push(cmd);
+        }
+    }
+    let mut points = b.sides[side as usize].command_points;
+    plan.retain(|c| {
+        let ok = c.cost() <= points;
+        if ok {
+            points -= c.cost();
+        }
+        ok
+    });
+    plan
+}
+
+/// Screening look (10 seconds) and how many candidates get the full look.
+pub const SCREEN_TICKS: u32 = 10 * TICK_HZ;
+pub const FINALISTS: usize = 4;
+
+/// Scores for each plan, played on copies of the battle. Uses all cores
+/// outside the browser; each copy is independent, so the scores are the
+/// same however many threads run them.
+fn evaluate(
+    b: &Battle,
+    side: u8,
+    plans: &[Vec<Command>],
+    theirs: &[Command],
+    ticks: u32,
+) -> Vec<i64> {
+    let workers = if cfg!(target_arch = "wasm32") {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(plans.len())
+    };
+    if workers <= 1 {
+        return plans
+            .iter()
+            .map(|p| play_forward(b, side, p, theirs, ticks))
+            .collect();
+    }
+    let mut out = vec![0i64; plans.len()];
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = (0..workers)
+            .map(|w| {
+                sc.spawn(move || {
+                    (w..plans.len())
+                        .step_by(workers)
+                        .map(|k| (k, play_forward(b, side, &plans[k], theirs, ticks)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for h in handles {
+            for (k, v) in h.join().expect("lookahead worker panicked") {
+                out[k] = v;
+            }
+        }
+    });
+    out
 }
 
 /// Our strength kept minus theirs, after playing `ours` against `theirs`.
-fn play_forward(b: &Battle, side: u8, ours: &[Command], theirs: &[Command]) -> i64 {
+fn play_forward(b: &Battle, side: u8, ours: &[Command], theirs: &[Command], ticks: u32) -> i64 {
     let mut c = b.clone();
     c.lookahead = true;
     c.sides[0].ai = false;
@@ -232,7 +373,7 @@ fn play_forward(b: &Battle, side: u8, ours: &[Command], theirs: &[Command]) -> i
         let _ = c.issue(opp, cmd);
     }
     let (me0, them0) = (c.side_strength(side), c.side_strength(opp));
-    let end = c.tick + LOOKAHEAD_TICKS;
+    let end = c.tick + ticks;
     while c.tick < end && c.outcome.is_none() {
         c.step();
     }
@@ -242,7 +383,7 @@ fn play_forward(b: &Battle, side: u8, ours: &[Command], theirs: &[Command]) -> i
 /// Variations on the base plan: one group gets a different order.
 fn candidates(b: &Battle, side: u8, base: &[Command]) -> Vec<Vec<Command>> {
     let mut out = Vec::new();
-    for g in b.groups.iter().filter(|g| g.side == side) {
+    for g in b.groups.iter().filter(|g| g.side == side && !g.fixed) {
         if g.status != GroupStatus::Active || g.alive == 0 {
             continue;
         }
@@ -264,6 +405,24 @@ fn candidates(b: &Battle, side: u8, base: &[Command]) -> Vec<Vec<Command>> {
             }
         }
         orders.push(Command::Hold { group: g.id });
+        // Climb or dive: the other layer is hit from above or below.
+        if g.layer_until == crate::battle::NONE {
+            orders.push(Command::ChangeLayer { group: g.id });
+        }
+        // Go after the nearest enemy structure (beacon, pylon, station).
+        if let Some(st) = b
+            .groups
+            .iter()
+            .filter(|o| o.side != side && o.fixed && o.status.in_battle() && o.alive > 0)
+            .map(|o| (len((o.cx - g.cx) as i64, (o.cy - g.cy) as i64), o.id))
+            .filter(|&(d, _)| d <= 4500 * FP as i64)
+            .min()
+        {
+            orders.push(Command::Attack {
+                group: g.id,
+                target: st.1,
+            });
+        }
         for order in orders {
             let mut plan: Vec<Command> = base
                 .iter()

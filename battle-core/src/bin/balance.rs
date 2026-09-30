@@ -24,15 +24,32 @@ fn main() {
     let mut wins = [0u32; 3];
     let mut pulses = Vec::new();
     // Kills and damage dealt by the attacker's class.
-    let mut kills = [0u64; 5];
-    let mut dealt = [0i64; 5];
-    let mut sig_used = [0u32; 4];
+    let mut kills = [0u64; 10];
+    let mut dealt = [0i64; 10];
+    let mut sig_used = [0u32; 7];
+    // Doctrine phase changes (to disengage), layer changes, barrages, boosts,
+    // reserves jumping in at a beacon, debris cells, fields lost.
+    let mut misc = [0u32; 7];
+    let started = std::time::Instant::now();
     let mut group_dealt = Vec::new();
     let first: u64 = arg(&args, "--first")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
     for seed in first..first + seeds {
-        let mut b = scenario::demo(seed, scale);
+        // `--red-layout x,y;x,y;...` tries another red formation (6 groups).
+        let mut b = match arg(&args, "--red-layout") {
+            Some(l) => {
+                let mut at = scenario::RED_LAYOUT;
+                for (k, p) in l.split(';').enumerate().take(6) {
+                    let v: Vec<i32> = p.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    if v.len() == 2 {
+                        at[k] = (v[0], v[1]);
+                    }
+                }
+                scenario::demo_with(seed, scale, &at)
+            }
+            None => scenario::demo(seed, scale),
+        };
         b.sides[0].ai = true;
         b.sides[1].ai = true;
         match arg(&args, "--no-terrain").as_deref() {
@@ -60,7 +77,7 @@ fn main() {
                     ev::WING_STRIKE => dealt[ShipClass::Carrier as usize] += e.c as i64,
                     ev::SIGNATURE_FIRED => {
                         let g = &b.groups[e.a as usize];
-                        let mut seen = [false; 4];
+                        let mut seen = [false; 7];
                         for &id in &g.ships {
                             seen[ShipClass::from_u8(b.ships.class[id as usize])
                                 .stats()
@@ -70,11 +87,38 @@ fn main() {
                             sig_used[k] += *s as u32;
                         }
                     }
+                    ev::PHASE if e.c == Phase::Disengage as i32 => misc[0] += 1,
+                    ev::LAYER_CHANGED if e.d == 1 => misc[1] += 1,
+                    ev::BARRAGE_MARKED => misc[2] += 1,
+                    ev::SHIELD_BOOST => misc[3] += 1,
+                    ev::JUMP_IN => misc[4] += 1,
+                    ev::DEBRIS => misc[5] += 1,
+                    ev::FIELD_LOST => misc[6] += 1,
                     _ => {}
                 }
             }
         }
         let o = b.outcome.unwrap();
+        if o.winner < 0 && arg(&args, "--show-draws").is_some() {
+            println!("draw seed {seed}:");
+            for g in b
+                .groups
+                .iter()
+                .filter(|g| g.status.in_battle() && g.alive > 0)
+            {
+                println!(
+                    "  {} {:?} {:?} layer {} alive {} cohesion {} at ({}, {})",
+                    g.name,
+                    g.status,
+                    g.phase,
+                    g.layer,
+                    g.alive,
+                    g.cohesion,
+                    g.cx / 100,
+                    g.cy / 100
+                );
+            }
+        }
         wins[match o.winner {
             0 => 0,
             1 => 1,
@@ -110,8 +154,19 @@ fn main() {
         pulses[pulses.len() / 2],
         pulses[pulses.len() - 1]
     );
-    let names = ["battleship", "cruiser", "destroyer", "flagship", "carrier"];
-    for c in 0..5 {
+    let names = [
+        "battleship",
+        "cruiser",
+        "destroyer",
+        "flagship",
+        "carrier",
+        "artillery",
+        "support",
+        "station",
+        "beacon",
+        "pylon",
+    ];
+    for c in 0..8 {
         println!(
             "  {:<10} kills {:>6.1}/battle  gun+wing damage {:>8.0}/battle",
             names[c],
@@ -125,6 +180,22 @@ fn main() {
         sig_used[1] as f64 / seeds as f64,
         sig_used[2] as f64 / seeds as f64,
         sig_used[3] as f64 / seeds as f64
+    );
+    let per = |v: u32| v as f64 / seeds as f64;
+    println!(
+        "per battle: barrage {:.1}, shield boost {:.1}; disengages {:.1}, layer changes {:.1}, \
+         jump-ins {:.1}, debris cells {:.1}, fields lost {:.1}",
+        per(sig_used[4]),
+        per(sig_used[5]),
+        per(misc[0]),
+        per(misc[1]),
+        per(misc[4]),
+        per(misc[5]),
+        per(misc[6])
+    );
+    println!(
+        "time per battle: {:.2} s",
+        started.elapsed().as_secs_f64() / seeds as f64
     );
     println!(
         "damage dealt per group: {}",

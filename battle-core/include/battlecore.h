@@ -31,6 +31,9 @@ extern "C" {
 #define BC_CMD_BAD_TARGET 6
 #define BC_CMD_BATTLE_OVER 7
 #define BC_CMD_SIGNATURE_NOT_READY 8
+#define BC_CMD_IN_GRAVITY_WELL 9  /* no jumping out of a gravity well */
+#define BC_CMD_FIXED 10           /* structures take no orders */
+#define BC_CMD_CHANGING_LAYER 11
 
 /* Command verbs for bc_issue. */
 #define BC_VERB_ATTACK 0        /* a = target group */
@@ -43,6 +46,7 @@ extern "C" {
 #define BC_VERB_COMMIT_RESERVE 7
 #define BC_VERB_RETREAT 8
 #define BC_VERB_SIGNATURE 9     /* each ship uses its class's signature move */
+#define BC_VERB_CHANGE_LAYER 10 /* main <-> low layer, takes 4 s */
 
 #define BC_PART_ENGINE 1
 #define BC_PART_WEAPONS 2
@@ -54,6 +58,25 @@ extern "C" {
 #define BC_CLASS_DESTROYER 2
 #define BC_CLASS_FLAGSHIP 3
 #define BC_CLASS_CARRIER 4
+#define BC_CLASS_ARTILLERY 5
+#define BC_CLASS_SUPPORT 6
+#define BC_CLASS_STATION 7
+#define BC_CLASS_BEACON 8
+#define BC_CLASS_PYLON 9
+
+#define BC_LAYER_LOW 0
+#define BC_LAYER_MAIN 1
+#define BC_LAYER_MOVING 0x80
+
+/* Terrain cell kinds (bc_header_json "terrain.cells"). */
+#define BC_TERRAIN_EMPTY 0
+#define BC_TERRAIN_ASTEROIDS 1
+#define BC_TERRAIN_NEBULA 2
+#define BC_TERRAIN_GRAVITY 3
+#define BC_TERRAIN_DEBRIS 4
+#define BC_TERRAIN_PLANET 5
+#define BC_TERRAIN_FIELD0 6
+#define BC_TERRAIN_FIELD1 7
 
 #define BC_SHIP_ALIVE 0
 #define BC_SHIP_DEAD 1
@@ -80,6 +103,14 @@ extern "C" {
 #define BC_EV_FIGHTER_DOWN 18       /* a wing, b shooter ship, or wing | 0x80000000 */
 #define BC_EV_WING_STRIKE 19        /* a wing, b target ship, c damage */
 #define BC_EV_WING_LOST 20          /* a wing */
+#define BC_EV_LAYER_CHANGED 21      /* a group, c new layer; d 1 when the move starts */
+#define BC_EV_BARRAGE_MARKED 22     /* a strike id, b x (int32 units), c y, d side */
+#define BC_EV_BARRAGE_HIT 23        /* a strike id, c ships hit */
+#define BC_EV_PHASE 24              /* a group, c 0 approach, 1 engage, 2 disengage, 3 refit */
+#define BC_EV_JUMP_IN 25            /* a group, b beacon ship */
+#define BC_EV_DEBRIS 26             /* a terrain cell index turned to debris */
+#define BC_EV_FIELD_LOST 27         /* a pylon ship, b side */
+#define BC_EV_SHIELD_BOOST 28       /* a support ship, c ships boosted */
 
 typedef struct BcBattle BcBattle;
 
@@ -106,6 +137,7 @@ typedef struct BcShipView {
     const uint8_t *parts;   /* bits of parts still working */
     const uint8_t *state;   /* BC_SHIP_* */
     const uint32_t *target; /* 0xFFFFFFFF when none */
+    const uint8_t *layer;   /* BC_LAYER_*, | BC_LAYER_MOVING */
     int32_t fp;             /* fixed-point steps per distance unit */
 } BcShipView;
 

@@ -109,7 +109,8 @@ fn demo_battles_end_in_a_few_pulses() {
         let mut b = scenario::demo(seed, 1);
         let out = b.run_auto();
         let seconds = out.tick / TICK_HZ;
-        assert!((60..=300).contains(&seconds), "seed {seed}: {seconds} s");
+        assert!(out.winner >= 0, "seed {seed}: draw");
+        assert!((60..=480).contains(&seconds), "seed {seed}: {seconds} s");
     }
 }
 
@@ -318,7 +319,7 @@ fn anvils_close_in_on_enemies_hiding_in_a_nebula() {
     let goal_distance = |sense: bool| {
         let mut b = deployed();
         b.sides[0].terrain_sense = sense;
-        let (gun, target) = (2u16, 5u16); // blue anvil, red gun line
+        let (gun, target) = (2u16, 6u16); // blue anvil, red gun line
         let t = &b.groups[target as usize];
         let (tx, ty) = (t.cx / 100, t.cy / 100);
         b.terrain.paint_ellipse(NEBULA, tx, ty, 1200, 1200);
