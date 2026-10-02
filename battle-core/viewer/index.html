@@ -134,7 +134,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       <span><i class="box" style="background:var(--gravity)"></i>重力井：減速、不能跳離</span>
       <span><i class="box" style="background:var(--muted)"></i>殘骸：下層掩護</span>
       <span><i class="box" style="background:linear-gradient(90deg,var(--blue),var(--red))"></i>能量場：己方護盾快充</span>
-      <span>虛線外框＝下層</span>
+      <span>虛線外框＝下層；「斜視角」按鈕（V）把三層分開畫</span>
       <span>滾輪縮放，拖曳平移</span>
     </div>
     <div class="empty" id="empty">用 <code>battle --replay out.json</code> 產生重播檔，再從右上角載入。</div>
@@ -163,6 +163,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       <option value="4">4×</option>
       <option value="8">8×</option>
     </select>
+    <button id="tilt" type="button" title="切換俯視／斜視（V）">斜視角</button>
     <label class="chk" id="pp-wrap"><input id="pausePulse" type="checkbox" checked>每個脈衝暫停</label>
     <div class="timeline" id="tl-wrap"><canvas id="tl"></canvas></div>
   </div>
@@ -217,6 +218,14 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   let mode = "none";         // "replay" | "live"
   let report = null;
   let terrainCanvas = null;
+  // Oblique view: the plane tilted away from the camera, each height layer
+  // drawn as its own sheet. Heights are for display only.
+  let oblique = false;
+  const TILT = 0.5;                 // how much the plane is squashed
+  const LZ = [0, 2200, 4400];       // drawn height of low, main, fighter layers
+  const YS = () => oblique ? TILT : 1;
+  // Height of a layer code (bit 0: main, bit 1: changing layer).
+  function zOf(ly) { if (!oblique) return LZ[1]; ly = ly ?? 1; return ly & 2 ? (LZ[0] + LZ[1]) / 2 : LZ[ly & 1]; }
 
   // replay
   let R = null, fi = 0, playing = false, lastT = 0, pausedAtPulse = -1;
@@ -277,10 +286,17 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     H.terrain.cells = cells.join("");
     buildTerrain();
   }
+  // Which terrain kinds show on each sheet of the oblique view: each kind
+  // once, on the layer it mostly acts on (planets on both).
+  const SHEET_KINDS = { all: "1234567", low: "345", main: "12567" };
   function buildTerrain() {
     const t = H.terrain;
     terrainCanvas = null;
     if (!t || !/[1-7]/.test(t.cells)) return;
+    terrainCanvas = { dim: t.dim, cell: t.cell };
+    for (const [sheet, kinds] of Object.entries(SHEET_KINDS)) terrainCanvas[sheet] = paintTerrain(t, kinds);
+  }
+  function paintTerrain(t, kinds) {
     const px = 20; // pixels per cell
     const c = document.createElement("canvas");
     c.width = c.height = t.dim * px;
@@ -289,6 +305,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     for (let cy = 0; cy < t.dim; cy++) for (let cx = 0; cx < t.dim; cx++) {
       const k = t.cells[cy * t.dim + cx];
+      if (!kinds.includes(k)) continue;
       const X = cx * px, Y = (t.dim - 1 - cy) * px; // world y up
       if (k === "2") {
         const grd = g.createRadialGradient(X + px / 2, Y + px / 2, 0, X + px / 2, Y + px / 2, px * 1.1);
@@ -309,7 +326,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         g.fillStyle = hexA(COL.side[+k - 6], 0.09); g.fillRect(X, Y, px, px);
       }
     }
-    terrainCanvas = { canvas: c, px, dim: t.dim, cell: t.cell };
+    return c;
   }
   function hexA(hex, a) {
     const n = parseInt(hex.slice(1), 16);
@@ -421,8 +438,11 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   }
   const Wd = () => plot.getBoundingClientRect();
   function sx(x) { return (x - view.cx) * view.scale + Wd().width / 2; }
-  function sy(y) { return -(y - view.cy) * view.scale + Wd().height / 2; }
-  function toWorld(px, py) { const r = Wd(); return [(px - r.width / 2) / view.scale + view.cx, -(py - r.height / 2) / view.scale + view.cy]; }
+  function sy(y, z = LZ[1]) { return -(y - view.cy) * view.scale * YS() - (z - LZ[1]) * view.scale + Wd().height / 2; }
+  // Screen point to the world, on the sheet at height z.
+  function toWorld(px, py, z = LZ[1]) { const r = Wd(); return [(px - r.width / 2) / view.scale + view.cx, -(py - r.height / 2 + (z - LZ[1]) * view.scale) / (view.scale * YS()) + view.cy]; }
+  // A circle lying on the plane.
+  function ring(X, Y, r) { ctx.beginPath(); ctx.ellipse(X, Y, r, r * YS(), 0, 0, Math.PI * 2); }
   function lerpAngle(a, b, t) { const d = ((b - a + 384) % 256) - 128; return a + d * t; }
 
   function frames() {
@@ -442,7 +462,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     if (!H || !F) return;
     const [f0, f1, t] = F;
     const tick = f0.t + (f1.t - f0.t) * t;
-    drawGrid(r);
+    oblique ? drawSheets(r) : drawGrid(r);
     syncTerrain(tick);
     drawTerrain();
     const pos = new Array(H.ships.length);
@@ -450,37 +470,50 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
 
     // groups: intent arrows
     cur.g.forEach((g, gi) => {
-      const [cx, cy, gx, gy, , st, , alive] = g;
+      const [cx0, cy0, gx0, gy0, , st, , alive] = g;
       if (!alive || st >= 3) return;
       const col = COL.side[H.groups[gi].side];
+      // Arrows drawn on the group's own sheet: project to screen up front.
+      const gz = zOf(g[13]), cx = cx0, gx = gx0, cy = cy0, gy = gy0;
       ctx.strokeStyle = col; ctx.globalAlpha = gi === sel ? 0.95 : 0.35; ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 5]);
-      ctx.beginPath(); ctx.moveTo(sx(cx), sy(cy)); ctx.lineTo(sx(gx), sy(gy)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx(cx), sy(cy, gz)); ctx.lineTo(sx(gx), sy(gy, gz)); ctx.stroke();
       ctx.setLineDash([]);
-      const ang = Math.atan2(sy(gy) - sy(cy), sx(gx) - sx(cx));
+      const ang = Math.atan2(sy(gy, gz) - sy(cy, gz), sx(gx) - sx(cx));
       ctx.beginPath();
-      ctx.moveTo(sx(gx), sy(gy)); ctx.lineTo(sx(gx) - 9 * Math.cos(ang - 0.4), sy(gy) - 9 * Math.sin(ang - 0.4));
-      ctx.moveTo(sx(gx), sy(gy)); ctx.lineTo(sx(gx) - 9 * Math.cos(ang + 0.4), sy(gy) - 9 * Math.sin(ang + 0.4));
+      ctx.moveTo(sx(gx), sy(gy, gz)); ctx.lineTo(sx(gx) - 9 * Math.cos(ang - 0.4), sy(gy, gz) - 9 * Math.sin(ang - 0.4));
+      ctx.moveTo(sx(gx), sy(gy, gz)); ctx.lineTo(sx(gx) - 9 * Math.cos(ang + 0.4), sy(gy, gz) - 9 * Math.sin(ang + 0.4));
       ctx.stroke();
       ctx.globalAlpha = 1;
     });
 
     // ships
     const k = Math.max(0.3, Math.min(1.2, view.scale * 5));
-    for (let i = 0; i < H.ships.length; i++) {
+    let order = [...H.ships.keys()];
+    // Oblique: lower sheets first, then far before near.
+    if (oblique) order = order.filter(i => f0.s[i]).sort((i, j) => zOf(f0.s[i][7]) - zOf(f0.s[j][7]) || f0.s[j][1] - f0.s[i][1]);
+    for (const i of order) {
       const a = f0.s[i];
       if (!a) continue;
       const b = f1.s[i] || a;
       const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
-      pos[i] = [x, y];
+      const z = zOf(a[7]);
+      pos[i] = [x, y, z];
       const h = lerpAngle(a[2], b[2], t) / 256 * Math.PI * 2;
       const [cls, side, grp] = H.ships[i];
       const spec = CLASS[cls];
-      const X = sx(x), Y = sy(y);
+      const X = sx(x), Y = sy(y, z);
+      if (oblique && z > LZ[0]) {
+        // Drop line to the floor, so height and position read together.
+        ctx.strokeStyle = COL.side[side]; ctx.globalAlpha = 0.18; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X, sy(y, LZ[0])); ctx.stroke();
+        ctx.fillStyle = COL.side[side]; ctx.fillRect(X - 1, sy(y, LZ[0]) - 1, 2, 2);
+        ctx.globalAlpha = 1;
+      }
       const L = spec.len * k * 0.5, Wi = spec.wid * k * 0.5;
       const ly = a[7] ?? 1, low = (ly & 1) === 0, moving = (ly & 2) !== 0;
       ctx.save();
-      ctx.translate(X, Y); ctx.rotate(cls >= 7 ? 0 : -h);
+      ctx.translate(X, Y); ctx.scale(1, YS()); ctx.rotate(cls >= 7 ? 0 : -h);
       ctx.beginPath();
       if (cls === 4) { // carrier: flat-topped hull
         ctx.moveTo(L, -Wi * 0.5); ctx.lineTo(L, Wi * 0.5); ctx.lineTo(-L * 0.8, Wi); ctx.lineTo(-L * 0.8, -Wi); ctx.closePath();
@@ -509,8 +542,8 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       }
       if (grp === sel) { ctx.strokeStyle = COL.fg; ctx.lineWidth = 1; ctx.stroke(); }
       ctx.restore();
-      if (a[6] & 16) { ctx.strokeStyle = COL.warn; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(X, Y, L * 1.2 + 2, 0, Math.PI * 2); ctx.stroke(); }
-      if (cls === 3) { ctx.strokeStyle = COL.side[side]; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(X, Y, L * 1.25 + 3, 0, Math.PI * 2); ctx.stroke(); }
+      if (a[6] & 16) { ctx.strokeStyle = COL.warn; ctx.lineWidth = 1; ring(X, Y, L * 1.2 + 2); ctx.stroke(); }
+      if (cls === 3) { ctx.strokeStyle = COL.side[side]; ctx.lineWidth = 1; ring(X, Y, L * 1.25 + 3); ctx.stroke(); }
     }
 
     // fighter wings (fighter layer, drawn above ships)
@@ -519,13 +552,18 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     for (const w of f0.w || []) {
       const n = w1.get(w[0]) || w;
       const x = w[1] + (n[1] - w[1]) * t, y = w[2] + (n[2] - w[2]) * t;
-      wingPos.set(w[0], [x, y]);
-      const X = sx(x), Y = sy(y), count = w[4];
+      const wz = oblique ? LZ[2] : LZ[1];
+      wingPos.set(w[0], [x, y, wz]);
+      const X = sx(x), Y = sy(y, wz), count = w[4];
+      if (oblique) {
+        ctx.strokeStyle = COL.side[w[3]]; ctx.globalAlpha = 0.12; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X, sy(y, LZ[0])); ctx.stroke();
+      }
       ctx.fillStyle = COL.side[w[3]];
       ctx.globalAlpha = w[5] === 2 ? 0.5 : 0.95;
       for (let f = 0; f < count; f++) {
         const ang = f * 2.4, rr = 3 + Math.sqrt(f) * 3.2;
-        ctx.fillRect(X + Math.cos(ang) * rr - 1.2, Y + Math.sin(ang) * rr - 1.2, 2.4, 2.4);
+        ctx.fillRect(X + Math.cos(ang) * rr - 1.2, Y + Math.sin(ang) * rr * YS() - 1.2, 2.4, 2.4);
       }
       ctx.globalAlpha = 1;
     }
@@ -540,7 +578,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
           if (!p || !q) continue;
           ctx.strokeStyle = COL.dmg[d];
           ctx.lineWidth = c & 2 ? 4 : d === 0 ? 1.6 : 1;
-          ctx.beginPath(); ctx.moveTo(sx(p[0]), sy(p[1])); ctx.lineTo(sx(q[0]), sy(q[1])); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(sx(p[0]), sy(p[1], p[2])); ctx.lineTo(sx(q[0]), sy(q[1], q[2])); ctx.stroke();
         } else if (kind === EV.FIGHTER_DOWN) {
           const p = wingPos.get(a);
           if (!p) continue;
@@ -548,10 +586,10 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
           const q = b < 2147483648 ? (pos[b] || shipAt(f0, b)) : null;
           if (q) {
             ctx.strokeStyle = COL.warn; ctx.lineWidth = 0.7;
-            ctx.beginPath(); ctx.moveTo(sx(q[0]), sy(q[1])); ctx.lineTo(sx(p[0]), sy(p[1])); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sx(q[0]), sy(q[1], q[2])); ctx.lineTo(sx(p[0]), sy(p[1], p[2])); ctx.stroke();
           }
           ctx.fillStyle = COL.warn;
-          ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1], p[2]), 3, 0, Math.PI * 2); ctx.fill();
         }
       }
       for (const [, , a, b] of strikeByTick.get(T - dt) || []) {
@@ -559,7 +597,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         if (!p || !q) continue;
         ctx.strokeStyle = COL.dmg[2]; ctx.lineWidth = 1.2;
         ctx.setLineDash([2, 3]);
-        ctx.beginPath(); ctx.moveTo(sx(p[0]), sy(p[1])); ctx.lineTo(sx(q[0]), sy(q[1])); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(sx(p[0]), sy(p[1], p[2])); ctx.lineTo(sx(q[0]), sy(q[1], q[2])); ctx.stroke();
         ctx.setLineDash([]);
       }
     }
@@ -571,7 +609,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         const p = pos[a] || shipAt(f0, a) || lastPos.get(a);
         if (!p) continue;
         ctx.strokeStyle = COL.warn; ctx.globalAlpha = 1 - dt / 20; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 4 + dt * 1.6, 0, Math.PI * 2); ctx.stroke();
+        ring(sx(p[0]), sy(p[1], p[2]), 4 + dt * 1.6); ctx.stroke();
       }
     }
     ctx.globalAlpha = 1;
@@ -594,10 +632,10 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
       const R0 = 600 * view.scale;
       ctx.strokeStyle = COL.side[side]; ctx.lineWidth = 2;
       ctx.setLineDash([8, 6]);
-      ctx.beginPath(); ctx.arc(sx(x), sy(y), R0, 0, Math.PI * 2); ctx.stroke();
+      ring(sx(x), sy(y), R0); ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 0.12; ctx.fillStyle = COL.warn;
-      ctx.beginPath(); ctx.moveTo(sx(x), sy(y)); ctx.arc(sx(x), sy(y), R0, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - left / (5 * H.tickHz))); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(sx(x), sy(y)); ctx.ellipse(sx(x), sy(y), R0, R0 * YS(), 0, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - left / (5 * H.tickHz))); ctx.fill();
       ctx.globalAlpha = 1;
       ctx.fillStyle = COL.warn; ctx.font = `12px ${C("font-data")}`; ctx.textAlign = "center";
       ctx.fillText(`轟擊 ${(left / H.tickHz).toFixed(1)}s`, sx(x), sy(y) + 4);
@@ -609,7 +647,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     cur.g.forEach((g, gi) => {
       const [cx, cy, , , coh, st, , alive, sig] = g;
       if (!alive || st === 4 || st === 5) return;
-      const X = sx(cx), Y = sy(cy);
+      const X = sx(cx), Y = sy(cy, zOf(g[13]));
       const name = H.groups[gi].name.split("・").pop();
       const picking = pending && pending.needs === "enemy" && H.groups[gi].side === 1 && st <= 2;
       if (gi === sel || picking) {
@@ -639,7 +677,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
         if (kind !== EV.SIG_FIRE) continue;
         const g = cur.g[a];
         ctx.strokeStyle = COL.warn; ctx.globalAlpha = 1 - dt / 16; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(sx(g[0]), sy(g[1]), 20 + dt * 5, 0, Math.PI * 2); ctx.stroke();
+        ring(sx(g[0]), sy(g[1], zOf(g[13])), 20 + dt * 5); ctx.stroke();
       }
     }
     ctx.globalAlpha = 1;
@@ -660,13 +698,38 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   }
   const lastPos = new Map();
   let hover = null;
-  function shipAt(f, i) { const s = f && f.s[i]; return s ? [s[0], s[1]] : null; }
+  function shipAt(f, i) { const s = f && f.s[i]; return s ? [s[0], s[1], zOf(s[7])] : null; }
 
   function drawTerrain() {
     if (!terrainCanvas) return;
-    const { canvas, dim, cell } = terrainCanvas;
-    const half = dim * cell / 2;
-    ctx.drawImage(canvas, sx(-half), sy(half), dim * cell * view.scale, dim * cell * view.scale);
+    const { dim, cell } = terrainCanvas;
+    const half = dim * cell / 2, w = dim * cell * view.scale;
+    if (!oblique) { ctx.drawImage(terrainCanvas.all, sx(-half), sy(half), w, w); return; }
+    ctx.drawImage(terrainCanvas.low, sx(-half), sy(half, LZ[0]), w, w * TILT);
+    ctx.drawImage(terrainCanvas.main, sx(-half), sy(half, LZ[1]), w, w * TILT);
+  }
+  // Oblique view: one outlined sheet per height layer, gridded floor.
+  const SHEET_NAME = ["下層（軌道）", "主戰層", "戰機層"];
+  function drawSheets(r) {
+    const F = 12000, step = 1000;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = COL.grid;
+    ctx.beginPath();
+    for (let v = -F; v <= F; v += step) {
+      ctx.moveTo(sx(v), sy(-F, LZ[0])); ctx.lineTo(sx(v), sy(F, LZ[0]));
+      ctx.moveTo(sx(-F), sy(v, LZ[0])); ctx.lineTo(sx(F), sy(v, LZ[0]));
+    }
+    ctx.stroke();
+    ctx.font = `11px ${C("font-data")}`; ctx.textAlign = "left";
+    for (let l = 0; l < 3; l++) {
+      ctx.strokeStyle = COL.line; ctx.globalAlpha = l === 1 ? 0.9 : 0.6;
+      ctx.strokeRect(sx(-F), sy(F, LZ[l]), sx(F) - sx(-F), sy(-F, LZ[l]) - sy(F, LZ[l]));
+      // Name each sheet at the left edge, level with the middle of the view.
+      ctx.fillStyle = COL.muted;
+      ctx.fillText(SHEET_NAME[l], Math.max(12, sx(-F) + 6), sy(view.cy, LZ[l]) + 4);
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillText("斜視角：三片分別是三個高度層，細線連到下層的投影點；格線 1000 距離單位", 12, 18);
   }
   function drawGrid(r) {
     const step = 1000;
@@ -908,7 +971,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     let best = -1, bd = 40 * 40;
     F[1].g.forEach((g, i) => {
       if (!g[7] || g[5] >= 3) return;
-      const d = (sx(g[0]) - px) ** 2 + (sy(g[1]) - py) ** 2;
+      const d = (sx(g[0]) - px) ** 2 + (sy(g[1], zOf(g[13])) - py) ** 2;
       if (d < bd) { bd = d; best = i; }
     });
     return best;
@@ -933,6 +996,13 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
   $("back").onclick = () => { if (R) { setPlaying(false); fi = Math.max(0, Math.floor(fi) - 1); render(); } };
   $("fwd").onclick = () => { if (R) { setPlaying(false); fi = Math.min(R.frames.length - 1, Math.floor(fi) + 1); render(); } };
   $("go").onclick = go;
+  function toggleTilt() {
+    oblique = !oblique;
+    $("tilt").textContent = oblique ? "俯視角" : "斜視角";
+    $("tilt").setAttribute("aria-pressed", oblique);
+    render();
+  }
+  $("tilt").onclick = toggleTilt;
   $("restart").onclick = () => W && startLive();
   $("aiBlue").onchange = () => { if (mode === "live") startLive(); };
   document.addEventListener("keydown", (e) => {
@@ -940,6 +1010,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     if (e.code === "Space") { e.preventDefault(); mode === "live" ? go() : setPlaying(!playing); }
     if (mode === "replay" && e.code === "ArrowRight") $("fwd").click();
     if (mode === "replay" && e.code === "ArrowLeft") $("back").click();
+    if (e.code === "KeyV") toggleTilt();
     if (e.code === "Escape" && pending) { pending = null; renderOrders(); render(); }
   });
   function scrub(e) {
@@ -957,7 +1028,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     hover = [e.clientX - r.left, e.clientY - r.top];
     if (drag) {
       if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 5) drag.moved = true;
-      if (drag.moved) { view.cx = drag.cx - (e.clientX - drag.x) / view.scale; view.cy = drag.cy + (e.clientY - drag.y) / view.scale; }
+      if (drag.moved) { view.cx = drag.cx - (e.clientX - drag.x) / view.scale; view.cy = drag.cy + (e.clientY - drag.y) / (view.scale * YS()); }
     }
     if (drag?.moved || (pending && pending.needs === "point")) render();
   });
@@ -967,7 +1038,8 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     const r = Wd();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     if (mode === "live" && pending && pending.needs === "point") {
-      const [wx, wy] = toWorld(px, py);
+      const F = frames();
+      const [wx, wy] = toWorld(px, py, F && sel >= 0 ? zOf(F[1].g[sel][13]) : LZ[1]);
       return issue(4, Math.round(wx), Math.round(wy));
     }
     const g = nearestGroup(px, py);
@@ -979,7 +1051,7 @@ label.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); c
     const [mx, my] = toWorld(e.clientX - r.left, e.clientY - r.top);
     view.scale *= Math.exp(-e.deltaY * 0.0015);
     view.cx = mx - (e.clientX - r.left - r.width / 2) / view.scale;
-    view.cy = my + (e.clientY - r.top - r.height / 2) / view.scale;
+    view.cy = my + (e.clientY - r.top - r.height / 2) / (view.scale * YS());
     render();
   }, { passive: false });
 
