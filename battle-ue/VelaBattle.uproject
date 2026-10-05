@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "",
+	"Description": "Fleet battle front end for the battle-core simulation",
+	"Modules": [
+		{
+			"Name": "VelaBattle",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

@@ -199,11 +199,10 @@ python3 viewer/build.py out/replay.html out/r1.json   # 包進一場重播
 核心編成 `battlecore.dll`（Windows）或 `libbattlecore.so`/`.a`，C 介面宣告在 `include/battlecore.h`。
 
 - **記憶體**：核心擁有所有記憶體。遊戲端透過 `bc_ships` 讀艦船陣列，透過 `bc_events` 讀本步事件；另有 `bc_header_json` 和 `bc_frame_json` 可以取得 JSON 格式的完整狀態（含戰機、飛彈、地形）。
+- **型別化視圖**（給遊戲引擎用，不必解析 JSON）：`bc_ship_fx`（船體、護盾、壓力百分比）、`bc_missiles`、`bc_wings`、`bc_groups`（重心、目標點、士氣、狀態、準則、所在層、招牌技、戰機數、集火部位）、`bc_group_name`、`bc_strikes`（落點倒數）、`bc_terrain`（地形格網）、`bc_report_text`（戰報）。複製型函式把最多 `cap` 筆寫進呼叫端的緩衝區，回傳總筆數。結構的大小和欄位位置由 Rust 測試和 `battle-ue/Tests` 的 `static_assert` 雙邊固定。
+- **事件**：遊戲引擎每次 `bc_step(b, 1)` 後讀 `bc_events`。沒用過 JSON 視圖的話，核心不會替 JSON 累積事件（以前會一直堆積）。
 - **錯誤處理**：Rust 的 panic 不會穿過邊界，會轉成錯誤碼。
-- **UE 端做法**：
-  - 包成 ThirdParty 模組，載入 DLL。
-  - 每個 tick 呼叫 `bc_step`，把位置和朝向寫進 Instanced Static Mesh。
-  - 事件轉成 Niagara 特效：開火、命中、擊沉、護盾過載、招牌技、戰機攻擊。
+- **UE 端**：見 `../battle-ue`（UE 5.8 專案，含建置步驟）。
 - **範例**：`examples/ffi_smoke.c` 是最小的 C 範例，結果跟 Rust 命令列版相同。
 
 ```sh
@@ -223,14 +222,14 @@ cc examples/ffi_smoke.c -Iinclude target/release/libbattlecore.a -lpthread -ldl 
 | `src/ai.rs` | AI 指揮官 |
 | `src/scenario.rs` | 示範戰配置 |
 | `src/replay.rs` | 重播紀錄、JSON 輸出、戰報 |
-| `src/ffi.rs` | C 介面（也是瀏覽器版的介面） |
+| `src/ffi.rs` | C 介面（也是瀏覽器版的介面），含給遊戲引擎的型別化視圖 |
 | `src/bin/` | `battle` 命令列、`balance` 平衡測試、`bench` 效能測試 |
 | `tests/` | 確定性、規則、新艦種與地形的測試 |
 | `viewer/` | 試玩與重播畫面、打包腳本 |
 
 ## 下一步候選
 
-- 開始接 Unreal Engine：先做一個能顯示這場示範戰的 UE 專案。
+- UE 畫面（`../battle-ue`）換上正式模型和 Niagara 特效；從資料建立戰鬥的 C API 入口。
 - 戰鬥群尋路（A* 或流場），取代現在「碰到星球就轉向」的簡單繞行。
 - 老兵等級、旗艦光環、戰鬥中途從戰場邊緣增援。
 - 另外兩種派系地形：移動船塢（線）、中繼站（網）。

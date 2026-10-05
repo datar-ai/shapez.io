@@ -78,6 +78,19 @@ extern "C" {
 #define BC_TERRAIN_FIELD0 6
 #define BC_TERRAIN_FIELD1 7
 
+#define BC_TICK_HZ 20
+#define BC_PULSE_TICKS 1200 /* 60 s; the player gives orders at each pulse */
+
+#define BC_GROUP_ACTIVE 0
+#define BC_GROUP_RESERVE 1
+#define BC_GROUP_RETREATING 2
+#define BC_GROUP_ROUTED 3
+#define BC_GROUP_ESCAPED 4
+#define BC_GROUP_DESTROYED 5
+
+#define BC_WING_OUT 1
+#define BC_WING_RETURNING 2
+
 #define BC_SHIP_ALIVE 0
 #define BC_SHIP_DEAD 1
 #define BC_SHIP_ESCAPED 2
@@ -159,6 +172,88 @@ uint32_t bc_tick(const BcBattle *b);
 int32_t bc_winner(const BcBattle *b);
 int32_t bc_command_points(const BcBattle *b, uint32_t side);
 uint64_t bc_state_hash(const BcBattle *b);
+
+/* ---- Typed views for game engines ----
+ * Each copy function writes up to `cap` records to `out` and returns how many
+ * exist; call with out = NULL, cap = 0 to ask for the size. Positions are in
+ * distance units (already divided by fp).
+ *
+ * Events: read bc_events after every bc_step(b, 1). An engine that never calls
+ * the JSON views keeps no event backlog in the core. */
+
+typedef struct BcShipFx {
+    uint8_t hull_pct;   /* hull left, % of full */
+    uint8_t shield_pct; /* shields left over all facings, % */
+    uint8_t stress_pct; /* % of the overload threshold */
+    uint8_t flags;      /* bit 0: overloaded */
+} BcShipFx;
+/* One per ship in ship order; zeros for ships no longer on the field. */
+uint32_t bc_ship_fx(const BcBattle *b, BcShipFx *out, uint32_t cap);
+
+typedef struct BcMissile {
+    uint32_t id; /* slot; same for the whole flight */
+    int32_t x, y;
+    uint32_t target;
+    uint8_t side;
+    uint8_t kind; /* 0 missile, 1 torpedo */
+    uint16_t pad;
+} BcMissile;
+uint32_t bc_missiles(const BcBattle *b, BcMissile *out, uint32_t cap);
+
+typedef struct BcWing {
+    uint32_t id; /* same for the whole battle */
+    int32_t x, y;
+    uint32_t carrier;
+    uint32_t target; /* ship attacked, 0xFFFFFFFF when none */
+    uint8_t side;
+    uint8_t count; /* fighters left */
+    uint8_t state; /* BC_WING_* */
+    uint8_t pad;
+} BcWing;
+/* Wings in the air only. */
+uint32_t bc_wings(const BcBattle *b, BcWing *out, uint32_t cap);
+
+typedef struct BcGroup {
+    int32_t cx, cy;         /* centroid of living ships */
+    int32_t goal_x, goal_y; /* where it is heading */
+    int32_t cohesion;       /* morale 0..1000; routs at 0 */
+    int32_t signature;      /* <0: charging, ticks to fire; else ticks until ready */
+    int32_t target_group;   /* -1 when none */
+    uint32_t alive;
+    uint32_t ships;
+    uint16_t fighters_out;
+    uint16_t fighters_docked;
+    uint8_t side;
+    uint8_t status;   /* BC_GROUP_* */
+    uint8_t doctrine; /* 0 line, 1 anvil, 2 hammer */
+    uint8_t phase;    /* 0 approach, 1 engage, 2 disengage, 3 refit */
+    uint8_t layer;    /* BC_LAYER_*, | BC_LAYER_MOVING */
+    uint8_t signature_armed;
+    uint8_t fixed;      /* structure: takes no orders */
+    uint8_t focus_part; /* BC_PART_* or 0 */
+} BcGroup;
+/* In group order (the index bc_issue takes). */
+uint32_t bc_groups(const BcBattle *b, BcGroup *out, uint32_t cap);
+/* UTF-8 name, not NUL-terminated; valid while the battle lives. */
+const uint8_t *bc_group_name(const BcBattle *b, uint32_t group, uint32_t *len);
+
+typedef struct BcStrike {
+    int32_t x, y;
+    uint32_t ticks_left;
+    uint8_t side; /* side that fired */
+    uint8_t pad[3];
+} BcStrike;
+/* Marked barrages not yet landed. */
+uint32_t bc_strikes(const BcBattle *b, BcStrike *out, uint32_t cap);
+
+/* dim x dim cells of cell_units, row major; cell (cx, cy) covers
+ * x in [(cx - dim/2) * cell_units, +cell_units), same for y. Values
+ * BC_TERRAIN_*. Cells change in battle (debris, BC_EV_DEBRIS); the pointer
+ * stays valid while the battle lives. */
+const uint8_t *bc_terrain(const BcBattle *b, uint32_t *dim, uint32_t *cell_units);
+
+/* After-action report as UTF-8 text. Valid until the next call on b. */
+const uint8_t *bc_report_text(BcBattle *b, uint32_t *len);
 
 /* JSON views (UTF-8, not NUL-terminated; length from bc_json_len). Used by
  * the browser build; handy for tools. Valid until the next call on b. */
